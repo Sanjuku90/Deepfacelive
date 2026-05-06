@@ -14,10 +14,40 @@ import { Camera } from "@mediapipe/camera_utils";
 const FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
 const LEFT_EYE  = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
 const RIGHT_EYE = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
-const LEFT_BROW = [46,53,52,65,55,70,63,105,66,107];
-const RIGHT_BROW= [276,283,282,295,285,300,293,334,296,336];
+// 5-point brow (single lower edge row — avoids overly-thick strokes)
+const LEFT_BROW = [55, 65, 52, 53, 46];
+const RIGHT_BROW= [285, 295, 282, 283, 276];
 const LIPS_OUT  = [61,185,40,39,37,0,267,269,270,409,291,375,321,405,314,17,84,181,91,146];
 const LIPS_IN   = [78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95];
+
+// MediaPipe Camera sends frames at this resolution
+const VID_W = 640;
+const VID_H = 480;
+
+// ─── Object-cover transform ────────────────────────────────────────────────────
+// Maps a normalized landmark (lm.x ∈ [0,1], lm.y ∈ [0,1]) from the video frame
+// to canvas device-pixel coordinates, applying the same crop that CSS object-cover does.
+// mirrored=true: also flips x to match a scaleX(-1) video element.
+function lmToCanvas(
+  lmX: number, lmY: number,
+  canW: number, canH: number,
+  mirrored: boolean,
+): { x: number; y: number } {
+  // object-cover scale: pick the dimension that fills the canvas
+  const scaleX = canW / VID_W;
+  const scaleY = canH / VID_H;
+  const scale  = Math.max(scaleX, scaleY);
+
+  // offset of the top-left corner of the scaled video within the canvas
+  const offX = (VID_W * scale - canW) / 2;
+  const offY = (VID_H * scale - canH) / 2;
+
+  const vx = mirrored ? (1 - lmX) : lmX;
+  return {
+    x: vx * VID_W * scale - offX,
+    y: lmY * VID_H * scale - offY,
+  };
+}
 
 // ─── Color helpers ─────────────────────────────────────────────────────────────
 function getSkin(tone?: string) {
@@ -47,7 +77,7 @@ function getEye(color?: string): string {
     default:       return "#7B5726"; // brown
   }
 }
-function getLip(skinTone?: string): { fill: string; shadow: string } {
+function getLip(skinTone?: string) {
   switch ((skinTone ?? "").toLowerCase()) {
     case "dark":  return { fill: "#904040", shadow: "#602020" };
     case "light": return { fill: "#D08878", shadow: "#A05050" };
@@ -61,17 +91,17 @@ type LM = { x: number; y: number; z: number };
 function drawFace(
   ctx: CanvasRenderingContext2D,
   lm: LM[],
-  w: number,
-  h: number,
+  canW: number,
+  canH: number,
   skinTone?: string,
   hairCol?: string,
   eyeCol?: string,
   mirrored = true,
 ) {
-  const px = (i: number) => (mirrored ? 1 - lm[i].x : lm[i].x) * w;
-  const py = (i: number) => lm[i].y * h;
-  const pt = (i: number) => ({ x: px(i), y: py(i) });
+  // Map a landmark index to canvas coordinates, applying object-cover alignment
+  const pt = (i: number) => lmToCanvas(lm[i].x, lm[i].y, canW, canH, mirrored);
 
+  // Draw a closed/open path from an array of landmark indices
   const path = (indices: number[], close = true) => {
     ctx.beginPath();
     indices.forEach((i, j) => {
@@ -86,18 +116,20 @@ function drawFace(
   const eye  = getEye(eyeCol);
   const lip  = getLip(skinTone);
 
-  // Derived measurements
-  const topHead  = pt(10);
-  const foreL    = pt(109);
-  const foreR    = pt(338);
-  const chin     = pt(152);
-  const faceW    = Math.abs(px(356) - px(127));
+  // ── Reference measurements ──────────────────────────────────────
+  const topHead = pt(10);
+  const foreL   = pt(109);
+  const foreR   = pt(338);
+  const chin    = pt(152);
+  // Face width from left jaw to right jaw
+  const faceW   = Math.abs(pt(356).x - pt(127).x);
 
   // ── 1. EARS ────────────────────────────────────────────────────
   const lEar = pt(234);
   const rEar = pt(454);
-  const earH = Math.abs(py(127) - py(234)) * 0.45 + faceW * 0.04;
+  const earH = Math.abs(pt(127).y - pt(234).y) * 0.42 + faceW * 0.03;
   const earW = earH * 0.55;
+
   ctx.save();
   ctx.fillStyle   = skin.base;
   ctx.strokeStyle = skin.shadow;
@@ -106,58 +138,33 @@ function drawFace(
   ctx.beginPath();
   ctx.ellipse(lEar.x - earW * 0.35, lEar.y, earW, earH, 0, 0, Math.PI * 2);
   ctx.fill(); ctx.stroke();
-  // inner left ear detail
-  ctx.beginPath();
-  ctx.ellipse(lEar.x - earW * 0.25, lEar.y, earW * 0.45, earH * 0.55, 0, 0, Math.PI * 2);
-  ctx.strokeStyle = skin.shadow;
-  ctx.globalAlpha = 0.4;
-  ctx.stroke();
-  ctx.globalAlpha = 1;
   // right ear
-  ctx.fillStyle   = skin.base;
-  ctx.strokeStyle = skin.shadow;
   ctx.beginPath();
   ctx.ellipse(rEar.x + earW * 0.35, rEar.y, earW, earH, 0, 0, Math.PI * 2);
   ctx.fill(); ctx.stroke();
-  ctx.beginPath();
-  ctx.ellipse(rEar.x + earW * 0.25, rEar.y, earW * 0.45, earH * 0.55, 0, 0, Math.PI * 2);
-  ctx.globalAlpha = 0.4;
-  ctx.stroke();
-  ctx.globalAlpha = 1;
   ctx.restore();
 
-  // ── 2. HAIR CAP ────────────────────────────────────────────────
-  const hairH = faceW * 0.58;
+  // ── 2. HAIR CAP (tight to skull, natural hairline) ─────────────
+  const hairH = faceW * 0.20; // keep close to skull
   ctx.save();
   ctx.fillStyle = hair;
   ctx.beginPath();
-  ctx.moveTo(foreL.x - faceW * 0.08, foreL.y + faceW * 0.04);
+  ctx.moveTo(foreL.x - faceW * 0.05, foreL.y + faceW * 0.02);
   ctx.bezierCurveTo(
-    foreL.x - faceW * 0.16, topHead.y - hairH,
-    foreR.x + faceW * 0.16, topHead.y - hairH,
-    foreR.x + faceW * 0.08, foreR.y + faceW * 0.04,
+    foreL.x - faceW * 0.07, topHead.y - hairH,
+    foreR.x + faceW * 0.07, topHead.y - hairH,
+    foreR.x + faceW * 0.05, foreR.y + faceW * 0.02,
   );
-  ctx.lineTo(foreR.x + faceW * 0.04, foreR.y);
-  ctx.lineTo(topHead.x, topHead.y - faceW * 0.10);
-  ctx.lineTo(foreL.x - faceW * 0.04, foreL.y);
+  ctx.lineTo(foreR.x, foreR.y);
+  ctx.lineTo(topHead.x, topHead.y);
+  ctx.lineTo(foreL.x, foreL.y);
   ctx.closePath();
   ctx.fill();
-  // hair sheen
-  const hairGrad = ctx.createLinearGradient(topHead.x - faceW * 0.1, topHead.y - hairH, topHead.x + faceW * 0.3, topHead.y);
-  hairGrad.addColorStop(0, "rgba(255,255,255,0.12)");
-  hairGrad.addColorStop(0.3, "rgba(255,255,255,0)");
-  ctx.fillStyle = hairGrad;
-  ctx.beginPath();
-  ctx.moveTo(foreL.x - faceW * 0.08, foreL.y + faceW * 0.04);
-  ctx.bezierCurveTo(
-    foreL.x - faceW * 0.16, topHead.y - hairH,
-    foreR.x + faceW * 0.16, topHead.y - hairH,
-    foreR.x + faceW * 0.08, foreR.y + faceW * 0.04,
-  );
-  ctx.lineTo(foreR.x + faceW * 0.04, foreR.y);
-  ctx.lineTo(topHead.x, topHead.y - faceW * 0.10);
-  ctx.lineTo(foreL.x - faceW * 0.04, foreL.y);
-  ctx.closePath();
+  // sheen
+  const hg = ctx.createLinearGradient(topHead.x - faceW * 0.1, topHead.y - hairH, topHead.x + faceW * 0.2, topHead.y);
+  hg.addColorStop(0, "rgba(255,255,255,0.09)");
+  hg.addColorStop(0.4, "rgba(255,255,255,0)");
+  ctx.fillStyle = hg;
   ctx.fill();
   ctx.restore();
 
@@ -166,23 +173,21 @@ function drawFace(
   ctx.fillStyle = skin.base;
   ctx.fill();
 
-  // Forehead highlight + chin shadow gradient
-  const skinGrad = ctx.createLinearGradient(topHead.x, topHead.y, topHead.x, chin.y);
-  skinGrad.addColorStop(0,   "rgba(255,235,200,0.22)");
-  skinGrad.addColorStop(0.30,"rgba(255,255,255,0)");
-  skinGrad.addColorStop(1,   "rgba(0,0,0,0.20)");
+  // Forehead highlight → chin shadow gradient
+  const sg = ctx.createLinearGradient(topHead.x, topHead.y, topHead.x, chin.y);
+  sg.addColorStop(0,    "rgba(255,240,210,0.22)");
+  sg.addColorStop(0.30, "rgba(255,255,255,0)");
+  sg.addColorStop(1,    "rgba(0,0,0,0.20)");
   path(FACE_OVAL);
-  ctx.fillStyle = skinGrad;
+  ctx.fillStyle = sg;
   ctx.fill();
 
-  // Cheek blush
-  const lCheek = pt(50);
-  const rCheek = pt(280);
-  const blushR = faceW * 0.12;
-  [lCheek, rCheek].forEach(c => {
+  // Subtle cheek blush
+  const blushR = faceW * 0.11;
+  [pt(50), pt(280)].forEach(c => {
     const bg = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, blushR);
-    bg.addColorStop(0, "rgba(220,100,90,0.14)");
-    bg.addColorStop(1, "rgba(220,100,90,0)");
+    bg.addColorStop(0, "rgba(220,100,85,0.12)");
+    bg.addColorStop(1, "rgba(220,100,85,0)");
     ctx.beginPath();
     ctx.arc(c.x, c.y, blushR, 0, Math.PI * 2);
     ctx.fillStyle = bg;
@@ -191,10 +196,9 @@ function drawFace(
 
   // ── 4. EYEBROWS ────────────────────────────────────────────────
   const browCol = hair === "#D8D0C0" ? "#908060" : hair;
-  const browThick = faceW * 0.028;
   ctx.save();
   ctx.strokeStyle = browCol;
-  ctx.lineWidth   = browThick;
+  ctx.lineWidth   = faceW * 0.015; // thin and natural
   ctx.lineCap     = "round";
   ctx.lineJoin    = "round";
   [LEFT_BROW, RIGHT_BROW].forEach(brow => {
@@ -203,17 +207,6 @@ function drawFace(
     ctx.moveTo(pts[0].x, pts[0].y);
     pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
     ctx.stroke();
-    // subtle highlight above brow
-    ctx.globalAlpha = 0.15;
-    ctx.strokeStyle = skin.highlight;
-    ctx.lineWidth   = browThick * 0.5;
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y - browThick * 0.4);
-    pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y - browThick * 0.4));
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = browCol;
-    ctx.lineWidth   = browThick;
   });
   ctx.restore();
 
@@ -227,82 +220,72 @@ function drawFace(
     const cx   = (minX + maxX) / 2;
     const cy   = (minY + maxY) / 2;
     const eh   = maxY - minY;
-    const irisR = eh * 0.88;
+    // Iris ~50% of opening height → human proportion
+    const irisR = Math.max(eh * 0.50, 2);
 
     ctx.save();
-    // Clip to eye shape
     path(indices);
     ctx.clip();
 
-    // Sclera (slightly warm white)
+    // Sclera (warm white)
     ctx.fillStyle = "#F6F0EA";
     ctx.fill();
 
     // Iris with radial gradient
-    const iGrad = ctx.createRadialGradient(cx, cy - irisR * 0.08, 0, cx, cy, irisR);
-    iGrad.addColorStop(0,    eye);
-    iGrad.addColorStop(0.72, eye);
-    iGrad.addColorStop(1,    skin.shadow);
+    const ig = ctx.createRadialGradient(cx, cy - irisR * 0.08, 0, cx, cy, irisR);
+    ig.addColorStop(0,    eye);
+    ig.addColorStop(0.72, eye);
+    ig.addColorStop(1,    skin.shadow);
     ctx.beginPath();
     ctx.arc(cx, cy, irisR, 0, Math.PI * 2);
-    ctx.fillStyle = iGrad;
+    ctx.fillStyle = ig;
     ctx.fill();
 
-    // Dark iris ring
+    // Dark iris limbal ring
     ctx.beginPath();
     ctx.arc(cx, cy, irisR, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.strokeStyle = "rgba(0,0,0,0.30)";
     ctx.lineWidth   = irisR * 0.12;
     ctx.stroke();
 
     // Pupil
     ctx.beginPath();
-    ctx.arc(cx, cy, irisR * 0.40, 0, Math.PI * 2);
+    ctx.arc(cx, cy, irisR * 0.42, 0, Math.PI * 2);
     ctx.fillStyle = "#080808";
     ctx.fill();
 
-    // Primary catchlight
+    // Primary specular catchlight
     ctx.beginPath();
-    ctx.arc(cx + irisR * 0.28, cy - irisR * 0.28, irisR * 0.19, 0, Math.PI * 2);
+    ctx.arc(cx + irisR * 0.28, cy - irisR * 0.28, irisR * 0.18, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(255,255,255,0.90)";
     ctx.fill();
 
-    // Secondary small catchlight
+    // Tiny secondary catchlight
     ctx.beginPath();
-    ctx.arc(cx - irisR * 0.22, cy + irisR * 0.22, irisR * 0.09, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.arc(cx - irisR * 0.20, cy + irisR * 0.20, irisR * 0.08, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,0.40)";
     ctx.fill();
 
     ctx.restore();
 
-    // Upper eyelid shadow (gives depth)
+    // Upper eyelid shade (depth)
     ctx.save();
     path(indices);
     ctx.clip();
-    const lidGrad = ctx.createLinearGradient(cx, minY, cx, cy);
-    lidGrad.addColorStop(0, "rgba(0,0,0,0.28)");
-    lidGrad.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = lidGrad;
+    const lg = ctx.createLinearGradient(cx, minY, cx, cy);
+    lg.addColorStop(0, "rgba(0,0,0,0.25)");
+    lg.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillRect(minX - 2, minY, maxX - minX + 4, (maxY - minY) * 0.55);
+    ctx.fillStyle = lg;
+    ctx.fill();
     ctx.restore();
 
     // Lash line
     ctx.save();
     path(indices);
     ctx.strokeStyle = "#0A0A0A";
-    ctx.lineWidth   = 1.6;
+    ctx.lineWidth   = 1.5;
     ctx.stroke();
-    ctx.restore();
-
-    // Under-eye soft shadow
-    ctx.save();
-    const underGrad = ctx.createLinearGradient(cx, maxY, cx, maxY + eh * 0.55);
-    underGrad.addColorStop(0, "rgba(0,0,0,0.12)");
-    underGrad.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = underGrad;
-    ctx.beginPath();
-    ctx.ellipse(cx, maxY + eh * 0.1, (maxX - minX) * 0.6, eh * 0.45, 0, 0, Math.PI * 2);
-    ctx.fill();
     ctx.restore();
   };
 
@@ -320,94 +303,74 @@ function drawFace(
   ctx.strokeStyle = skin.shadow;
   ctx.lineCap     = "round";
 
-  // Bridge lines
-  ctx.globalAlpha = 0.32;
-  ctx.lineWidth   = nW * 0.07;
+  // Nose bridge shadow lines (subtle)
+  ctx.globalAlpha = 0.28;
+  ctx.lineWidth   = Math.max(nW * 0.06, 1);
   ctx.beginPath();
   ctx.moveTo(nTop.x - nW * 0.10, nTop.y);
-  ctx.quadraticCurveTo(tip.x - nW * 0.22, tip.y - nW * 0.18, tip.x - nW * 0.14, tip.y - nW * 0.04);
+  ctx.quadraticCurveTo(tip.x - nW * 0.22, tip.y - nW * 0.18, tip.x - nW * 0.12, tip.y - nW * 0.04);
   ctx.stroke();
   ctx.beginPath();
   ctx.moveTo(nTop.x + nW * 0.10, nTop.y);
-  ctx.quadraticCurveTo(tip.x + nW * 0.22, tip.y - nW * 0.18, tip.x + nW * 0.14, tip.y - nW * 0.04);
+  ctx.quadraticCurveTo(tip.x + nW * 0.22, tip.y - nW * 0.18, tip.x + nW * 0.12, tip.y - nW * 0.04);
   ctx.stroke();
 
   // Nose tip highlight
-  ctx.globalAlpha = 0.25;
+  ctx.globalAlpha = 0.22;
   ctx.fillStyle   = skin.highlight;
   ctx.beginPath();
-  ctx.ellipse(tip.x, tip.y - nW * 0.06, nW * 0.14, nW * 0.11, 0, 0, Math.PI * 2);
+  ctx.ellipse(tip.x, tip.y - nW * 0.06, nW * 0.12, nW * 0.09, 0, 0, Math.PI * 2);
   ctx.fill();
 
   // Nostrils
-  ctx.globalAlpha = 0.52;
+  ctx.globalAlpha = 0.48;
   ctx.fillStyle   = skin.shadow;
   ctx.beginPath();
-  ctx.ellipse(nL.x - nW * 0.02, nL.y + nW * 0.06, nW * 0.18, nW * 0.13, -0.3, 0, Math.PI * 2);
+  ctx.ellipse(nL.x - nW * 0.02, nL.y + nW * 0.06, nW * 0.17, nW * 0.12, -0.3, 0, Math.PI * 2);
   ctx.fill();
   ctx.beginPath();
-  ctx.ellipse(nR.x + nW * 0.02, nR.y + nW * 0.06, nW * 0.18, nW * 0.13, 0.3, 0, Math.PI * 2);
+  ctx.ellipse(nR.x + nW * 0.02, nR.y + nW * 0.06, nW * 0.17, nW * 0.12, 0.3, 0, Math.PI * 2);
   ctx.fill();
-
   ctx.restore();
 
   // ── 7. LIPS ────────────────────────────────────────────────────
-  // Outer lips
+  // Outer lip fill
   path(LIPS_OUT);
   ctx.fillStyle = lip.fill;
   ctx.fill();
 
-  // Inner mouth (open-mouth dark)
+  // Inner mouth (open-mouth dark area)
   path(LIPS_IN);
-  ctx.fillStyle = "rgba(30,10,10,0.72)";
+  ctx.fillStyle = "rgba(30,10,10,0.70)";
   ctx.fill();
 
-  // Cupid's bow highlight on upper lip
-  const upperLipPts = LIPS_OUT.slice(0, 11).map(i => pt(i));
+  // Upper lip Cupid's bow highlight
   ctx.save();
+  const lhg = ctx.createLinearGradient(pt(0).x, pt(37).y, pt(0).x, pt(17).y);
+  lhg.addColorStop(0, "rgba(255,210,195,0.38)");
+  lhg.addColorStop(0.6, "rgba(255,210,195,0)");
   path(LIPS_OUT.slice(0, 11));
-  const lhGrad = ctx.createLinearGradient(topHead.x, pt(37).y, topHead.x, pt(17).y);
-  lhGrad.addColorStop(0, "rgba(255,210,195,0.40)");
-  lhGrad.addColorStop(0.6, "rgba(255,210,195,0)");
-  ctx.fillStyle = lhGrad;
+  ctx.fillStyle = lhg;
   ctx.fill();
   ctx.restore();
 
-  // Lower lip highlight
-  const lowerMid = pt(17);
+  // Lower lip center highlight
   ctx.save();
-  const llGrad = ctx.createRadialGradient(lowerMid.x, lowerMid.y, 0, lowerMid.x, lowerMid.y, faceW * 0.09);
-  llGrad.addColorStop(0, "rgba(255,210,195,0.32)");
-  llGrad.addColorStop(1, "rgba(255,210,195,0)");
+  const lm17 = pt(17);
+  const llg = ctx.createRadialGradient(lm17.x, lm17.y, 0, lm17.x, lm17.y, faceW * 0.08);
+  llg.addColorStop(0, "rgba(255,210,195,0.28)");
+  llg.addColorStop(1, "rgba(255,210,195,0)");
   ctx.beginPath();
-  ctx.ellipse(lowerMid.x, lowerMid.y - faceW * 0.01, faceW * 0.08, faceW * 0.028, 0, 0, Math.PI * 2);
-  ctx.fillStyle = llGrad;
+  ctx.ellipse(lm17.x, lm17.y - faceW * 0.008, faceW * 0.07, faceW * 0.024, 0, 0, Math.PI * 2);
+  ctx.fillStyle = llg;
   ctx.fill();
   ctx.restore();
 
   // Lip outline
   path(LIPS_OUT);
   ctx.strokeStyle = lip.shadow;
-  ctx.lineWidth   = 0.8;
+  ctx.lineWidth   = 0.7;
   ctx.stroke();
-
-  // Philtrum (vertical groove above lips)
-  const philtrum1 = pt(0); // top lip center
-  const philtrum2 = pt(164); // just below nose
-  ctx.save();
-  ctx.strokeStyle = skin.shadow;
-  ctx.lineWidth   = faceW * 0.018;
-  ctx.globalAlpha = 0.22;
-  ctx.lineCap     = "round";
-  ctx.beginPath();
-  ctx.moveTo(philtrum1.x - faceW * 0.025, philtrum2.y);
-  ctx.lineTo(philtrum1.x - faceW * 0.018, philtrum1.y);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(philtrum1.x + faceW * 0.025, philtrum2.y);
-  ctx.lineTo(philtrum1.x + faceW * 0.018, philtrum1.y);
-  ctx.stroke();
-  ctx.restore();
 }
 
 // ─── Main Studio component ─────────────────────────────────────────────────────
@@ -421,19 +384,17 @@ export default function Studio() {
   const [fps, setFps] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
-
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
 
-  const streamRef      = useRef<MediaStream | null>(null);
+  const streamRef       = useRef<MediaStream | null>(null);
   const sourceCanvasRef = useRef<HTMLCanvasElement>(null);
   const outputCanvasRef = useRef<HTMLCanvasElement>(null);
   const outputVideoRef  = useRef<HTMLVideoElement>(null);
   const mediapipeInitRef = useRef(false);
   const avatarRef = useRef(activeAvatar);
-
   useEffect(() => { avatarRef.current = activeAvatar; }, [activeAvatar]);
 
-  // Bind output video to stream once permission is granted
+  // Bind the output video element to the stream when permission is granted
   useEffect(() => {
     if (hasPermission && streamRef.current && outputVideoRef.current) {
       outputVideoRef.current.srcObject = streamRef.current;
@@ -441,21 +402,31 @@ export default function Studio() {
     }
   }, [hasPermission]);
 
-  // Sync canvas pixel dimensions with CSS layout dimensions
+  // Keep canvas pixel dimensions in sync with CSS layout (DPR-aware)
   useEffect(() => {
-    const sync = (el: HTMLCanvasElement | null) => {
+    if (hasPermission !== true) return;
+
+    const syncCanvas = (el: HTMLCanvasElement | null) => {
       if (!el) return () => {};
-      const ro = new ResizeObserver(() => {
-        el.width  = el.offsetWidth;
-        el.height = el.offsetHeight;
-      });
+      const resize = () => {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+        const dpr = window.devicePixelRatio || 1;
+        const newW = Math.round(rect.width  * dpr);
+        const newH = Math.round(rect.height * dpr);
+        if (el.width !== newW || el.height !== newH) {
+          el.width  = newW;
+          el.height = newH;
+        }
+      };
+      const ro = new ResizeObserver(resize);
       ro.observe(el);
-      el.width  = el.offsetWidth;
-      el.height = el.offsetHeight;
+      requestAnimationFrame(resize);
       return () => ro.disconnect();
     };
-    const c1 = sync(sourceCanvasRef.current);
-    const c2 = sync(outputCanvasRef.current);
+
+    const c1 = syncCanvas(sourceCanvasRef.current);
+    const c2 = syncCanvas(outputCanvasRef.current);
     return () => { c1(); c2(); };
   }, [hasPermission]);
 
@@ -489,7 +460,6 @@ export default function Studio() {
   const initMediaPipe = useCallback((stream: MediaStream, video: HTMLVideoElement) => {
     if (mediapipeInitRef.current) return;
     mediapipeInitRef.current = true;
-
     video.srcObject = stream;
     video.play().catch(() => {});
 
@@ -508,22 +478,24 @@ export default function Studio() {
       const detected = !!(results.multiFaceLandmarks?.length);
       setFaceDetected(detected);
 
-      // Source panel: green landmark dots
+      // ── Source panel: cyan landmark dots (no mirroring, video is raw) ──
       const sc   = sourceCanvasRef.current;
       const sCtx = sc?.getContext("2d");
       if (sCtx && sc) {
         sCtx.clearRect(0, 0, sc.width, sc.height);
         if (detected) {
-          sCtx.fillStyle = "rgba(0,255,200,0.7)";
+          sCtx.fillStyle = "rgba(0,255,200,0.72)";
           for (const p of results.multiFaceLandmarks[0]) {
+            // Apply same object-cover transform so dots sit on the face in the video
+            const { x, y } = lmToCanvas(p.x, p.y, sc.width, sc.height, false);
             sCtx.beginPath();
-            sCtx.arc(p.x * sc.width, p.y * sc.height, 1.1, 0, Math.PI * 2);
+            sCtx.arc(x, y, 1.5, 0, Math.PI * 2);
             sCtx.fill();
           }
         }
       }
 
-      // Output panel: realistic face
+      // ── Output panel: realistic face (mirrored to match scaleX(-1) video) ──
       const oc   = outputCanvasRef.current;
       const oCtx = oc?.getContext("2d");
       if (oCtx && oc) {
@@ -535,7 +507,7 @@ export default function Studio() {
             results.multiFaceLandmarks[0] as LM[],
             oc.width, oc.height,
             av?.skinTone, av?.hairColor, av?.eyeColor,
-            true, // mirrored to match video background
+            true,
           );
         }
       }
@@ -545,8 +517,8 @@ export default function Studio() {
       onFrame: async () => {
         if (video.readyState >= 2) await faceMesh.send({ image: video });
       },
-      width: 640,
-      height: 480,
+      width: VID_W,
+      height: VID_H,
     });
     cam.start();
   }, []);
@@ -566,10 +538,7 @@ export default function Studio() {
         setElapsed(e => e + 1);
         setFps(Math.floor(Math.random() * 5 + 55));
       }, 1000);
-    } else {
-      setElapsed(0);
-      setFps(0);
-    }
+    } else { setElapsed(0); setFps(0); }
     return () => clearInterval(iv);
   }, [isStreaming]);
 
@@ -653,7 +622,7 @@ export default function Studio() {
         {/* Panels */}
         <div className="flex-1 flex gap-4 min-h-0">
 
-          {/* LEFT: source webcam + landmarks */}
+          {/* LEFT: source webcam + landmark dots */}
           <div className="w-[38%] flex flex-col gap-3 min-h-0">
             <div className="flex-1 relative bg-black rounded-lg overflow-hidden border border-border min-h-0">
               <video
@@ -701,7 +670,7 @@ export default function Studio() {
               className="absolute inset-0 w-full h-full object-cover"
               style={{ transform: "scaleX(-1)" }}
             />
-            {/* Face canvas overlay */}
+            {/* Realistic face canvas (no CSS transform — drawn with mirrored coords) */}
             <canvas
               ref={outputCanvasRef}
               className="absolute inset-0 w-full h-full"
