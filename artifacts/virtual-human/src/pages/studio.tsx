@@ -12,8 +12,12 @@ import * as THREE from "three";
 import { FaceMesh } from "@mediapipe/face_mesh";
 import { Camera } from "@mediapipe/camera_utils";
 
-// ─── Webcam background fills the Three.js canvas ─────────────────────────────
+// ─── Webcam video mapped as background ───────────────────────────────────────
 function VideoBackground({ videoEl }: { videoEl: HTMLVideoElement | null }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
+  const { size } = useThree();
+
   const texture = useMemo(() => {
     if (!videoEl) return null;
     const t = new THREE.VideoTexture(videoEl);
@@ -22,155 +26,188 @@ function VideoBackground({ videoEl }: { videoEl: HTMLVideoElement | null }) {
     return t;
   }, [videoEl]);
 
-  const meshRef = useRef<THREE.Mesh>(null);
-  const { size } = useThree();
-
   useFrame(() => {
     if (texture) texture.needsUpdate = true;
-    if (meshRef.current && videoEl && videoEl.videoWidth > 0) {
-      const videoAspect = videoEl.videoWidth / videoEl.videoHeight;
-      const canvasAspect = size.width / size.height;
-      // Cover: fill the canvas while maintaining video aspect ratio (mirrored)
-      let scaleX = 1, scaleY = 1;
-      if (canvasAspect > videoAspect) {
-        scaleX = canvasAspect / videoAspect;
-      } else {
-        scaleY = videoAspect / canvasAspect;
-      }
-      meshRef.current.scale.set(-scaleX * 6, scaleY * 6, 1); // negative X = mirror
-    }
+    if (!meshRef.current || !videoEl || videoEl.videoWidth === 0) return;
+    const vAsp = videoEl.videoWidth / videoEl.videoHeight;
+    const cAsp = size.width / size.height;
+    const scaleX = cAsp > vAsp ? cAsp / vAsp : 1;
+    const scaleY = cAsp > vAsp ? 1 : vAsp / cAsp;
+    // Negative X → mirror the video (selfie camera)
+    meshRef.current.scale.set(-scaleX * 8, scaleY * 8, 1);
   });
 
   if (!texture) return null;
   return (
-    <mesh ref={meshRef} position={[0, 0, -4]}>
+    <mesh ref={meshRef} position={[0, 0, -5]} renderOrder={-1}>
       <planeGeometry args={[1, 1]} />
-      <meshBasicMaterial map={texture} depthWrite={false} />
+      <meshBasicMaterial ref={matRef} map={texture} depthWrite={false} />
     </mesh>
   );
 }
 
-// ─── Avatar head overlaid on the detected face ───────────────────────────────
-interface AvatarProps {
+// ─── Avatar that overlays the face ───────────────────────────────────────────
+function AvatarHead({
+  rotation,
+  worldX,
+  worldY,
+  worldR, // target radius in world units
+  visible,
+}: {
   rotation: [number, number, number];
   worldX: number;
   worldY: number;
-  worldScale: number;
+  worldR: number;
   visible: boolean;
-}
-
-function AvatarHead({ rotation, worldX, worldY, worldScale, visible }: AvatarProps) {
+}) {
   const groupRef = useRef<THREE.Group>(null);
   const ringRef = useRef<THREE.Mesh>(null);
+  const innerRef = useRef<THREE.Mesh>(null);
   const t = useRef(0);
 
   useFrame((_, delta) => {
     t.current += delta;
-    if (!groupRef.current) return;
+    const g = groupRef.current;
+    if (!g) return;
 
-    groupRef.current.visible = visible;
+    g.visible = visible;
+    g.position.x = THREE.MathUtils.lerp(g.position.x, visible ? worldX : g.position.x, 0.18);
+    g.position.y = THREE.MathUtils.lerp(g.position.y, visible ? worldY : g.position.y, 0.18);
 
-    // Smoothly track target position and scale
-    groupRef.current.position.x = THREE.MathUtils.lerp(groupRef.current.position.x, worldX, 0.15);
-    groupRef.current.position.y = THREE.MathUtils.lerp(groupRef.current.position.y, worldY, 0.15);
-    const targetScale = visible ? worldScale : 0;
-    const currentScale = THREE.MathUtils.lerp(groupRef.current.scale.x, targetScale, 0.12);
-    groupRef.current.scale.setScalar(currentScale);
+    // Scale = target radius / geometry radius (geometry has radius=1 after normalizing)
+    const targetScale = visible ? worldR : 0;
+    const cs = THREE.MathUtils.lerp(g.scale.x, targetScale, 0.14);
+    g.scale.setScalar(cs);
 
-    // Apply head rotation
-    groupRef.current.rotation.x = THREE.MathUtils.lerp(groupRef.current.rotation.x, rotation[0], 0.1);
-    groupRef.current.rotation.y = THREE.MathUtils.lerp(groupRef.current.rotation.y, rotation[1], 0.1);
-    groupRef.current.rotation.z = THREE.MathUtils.lerp(groupRef.current.rotation.z, rotation[2], 0.1);
+    // Head rotation
+    g.rotation.x = THREE.MathUtils.lerp(g.rotation.x, rotation[0], 0.1);
+    g.rotation.y = THREE.MathUtils.lerp(g.rotation.y, rotation[1], 0.1);
+    g.rotation.z = THREE.MathUtils.lerp(g.rotation.z, rotation[2], 0.1);
 
-    if (ringRef.current) {
-      ringRef.current.rotation.z = t.current * 1.2;
+    // Spinning halo
+    if (ringRef.current) ringRef.current.rotation.z = t.current * 1.4;
+    // Pulsing inner glow
+    if (innerRef.current) {
+      const p = 0.88 + Math.sin(t.current * 2.5) * 0.06;
+      innerRef.current.scale.setScalar(p);
     }
   });
 
   return (
+    // geometry radius = 1; we control size via group scale = worldR
     <group ref={groupRef} position={[0, 0, 0]}>
-      {/* Main face sphere */}
+      {/* Solid face-sphere */}
       <mesh>
-        <icosahedronGeometry args={[0.5, 3]} />
+        <icosahedronGeometry args={[1, 3]} />
         <meshStandardMaterial
-          color="#00ffff"
-          emissive="#00bbbb"
-          emissiveIntensity={0.6}
-          roughness={0.1}
-          metalness={0.9}
+          color="#00dddd"
+          emissive="#009999"
+          emissiveIntensity={0.55}
+          roughness={0.12}
+          metalness={0.88}
           transparent
-          opacity={0.88}
+          opacity={0.82}
         />
       </mesh>
 
-      {/* Wireframe shell */}
+      {/* Wireframe shell (slightly larger) */}
       <mesh>
-        <icosahedronGeometry args={[0.52, 3]} />
-        <meshBasicMaterial color="#00ffff" wireframe transparent opacity={0.2} />
+        <icosahedronGeometry args={[1.04, 3]} />
+        <meshBasicMaterial color="#00ffff" wireframe transparent opacity={0.18} />
       </mesh>
 
-      {/* Spinning ring (halo) */}
+      {/* Pulsing inner glow sphere */}
+      <mesh ref={innerRef}>
+        <sphereGeometry args={[0.6, 16, 16]} />
+        <meshBasicMaterial color="#00ffff" transparent opacity={0.08} />
+      </mesh>
+
+      {/* "Eyes" — two small cyan orbs */}
+      <mesh position={[-0.32, 0.22, 0.88]}>
+        <sphereGeometry args={[0.1, 12, 12]} />
+        <meshStandardMaterial color="#ffffff" emissive="#00ffff" emissiveIntensity={2} />
+      </mesh>
+      <mesh position={[0.32, 0.22, 0.88]}>
+        <sphereGeometry args={[0.1, 12, 12]} />
+        <meshStandardMaterial color="#ffffff" emissive="#00ffff" emissiveIntensity={2} />
+      </mesh>
+
+      {/* "Mouth" — thin horizontal bar */}
+      <mesh position={[0, -0.32, 0.9]} rotation={[0, 0, 0]}>
+        <boxGeometry args={[0.45, 0.045, 0.04]} />
+        <meshStandardMaterial color="#00ffff" emissive="#00ffff" emissiveIntensity={1.5} />
+      </mesh>
+
+      {/* Spinning halo ring */}
       <mesh ref={ringRef}>
-        <torusGeometry args={[0.72, 0.015, 8, 64]} />
-        <meshBasicMaterial color="#00ffff" transparent opacity={0.7} />
+        <torusGeometry args={[1.22, 0.018, 8, 80]} />
+        <meshBasicMaterial color="#00ffff" transparent opacity={0.55} />
       </mesh>
 
-      {/* Glow point light */}
-      <pointLight color="#00ffff" intensity={2} distance={2} />
+      {/* Glow point light inside */}
+      <pointLight color="#00ffff" intensity={1.5} distance={2} />
     </group>
   );
 }
 
-// ─── Face-to-world coordinate conversion ─────────────────────────────────────
-function useFaceToWorld(faceCenter: [number, number], faceSize: number) {
-  const { size } = useThree();
-  return useMemo(() => {
-    const fov = 60 * (Math.PI / 180);
-    const camZ = 3;
-    const worldH = 2 * camZ * Math.tan(fov / 2);
-    const worldW = worldH * (size.width / size.height);
-    // Face center in normalized [0,1] → world coords. X is mirrored (selfie cam).
-    const worldX = -(faceCenter[0] - 0.5) * worldW;
-    const worldY = (0.5 - faceCenter[1]) * worldH;
-    // Map face size (fraction of screen) to world scale
-    const worldScale = faceSize * worldH * 1.6;
-    return { worldX, worldY, worldScale };
-  }, [faceCenter, faceSize, size]);
-}
-
+// ─── Full scene ───────────────────────────────────────────────────────────────
 function AvatarScene({
   videoEl,
   headRotation,
   faceCenter,
-  faceSize,
+  eyeDist,
   faceDetected,
 }: {
   videoEl: HTMLVideoElement | null;
   headRotation: [number, number, number];
   faceCenter: [number, number];
-  faceSize: number;
+  eyeDist: number; // normalized 0-1, fraction of frame width
   faceDetected: boolean;
 }) {
-  const { worldX, worldY, worldScale } = useFaceToWorld(faceCenter, faceSize);
+  const { size } = useThree();
+
+  // Convert normalized screen coords → Three.js world coords
+  const { worldX, worldY, worldR } = useMemo(() => {
+    const fov = 60 * (Math.PI / 180);
+    const camZ = 3;
+    const worldH = 2 * camZ * Math.tan(fov / 2); // ≈ 3.46
+    const worldW = worldH * (size.width / size.height);
+
+    // Face center: MediaPipe x=0 is left of original frame.
+    // Video is mirrored in background, so flip X.
+    const wX = -(faceCenter[0] - 0.5) * worldW;
+    const wY = (0.5 - faceCenter[1]) * worldH;
+
+    // Avatar radius in world units:
+    // eyeDist (fraction of frame width) × worldW gives eye distance in world.
+    // Head width ≈ eyeDist * 2.4  → radius ≈ eyeDist * 1.2 * worldW
+    // geometry has radius=1 so worldR = desired world radius directly
+    const wR = eyeDist * worldW * 1.35;
+
+    return { worldX: wX, worldY: wY, worldR: wR };
+  }, [faceCenter, eyeDist, size]);
 
   return (
     <>
       <VideoBackground videoEl={videoEl} />
-      <ambientLight intensity={0.4} />
-      <pointLight position={[0, 2, 2]} intensity={2} color="#ffffff" />
-      <pointLight position={[2, -1, 2]} intensity={1} color="#0044ff" />
+
+      {/* Scene lights */}
+      <ambientLight intensity={0.35} />
+      <pointLight position={[0, 2, 3]} intensity={2.5} color="#ffffff" />
+      <pointLight position={[-2, -1, 2]} intensity={1.2} color="#0055ff" />
+
       <AvatarHead
         rotation={headRotation}
         worldX={worldX}
         worldY={worldY}
-        worldScale={worldScale}
+        worldR={worldR}
         visible={faceDetected}
       />
     </>
   );
 }
 
-// ─── Main Studio page ─────────────────────────────────────────────────────────
+// ─── Main Studio component ────────────────────────────────────────────────────
 export default function Studio() {
   const { data: activeAvatar } = useGetActiveAvatar();
   const { data: config } = useGetConfig();
@@ -183,11 +220,13 @@ export default function Studio() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [headRotation, setHeadRotation] = useState<[number, number, number]>([0, 0, 0]);
   const [faceCenter, setFaceCenter] = useState<[number, number]>([0.5, 0.5]);
-  const [faceSize, setFaceSize] = useState(0.3);
+  const [eyeDist, setEyeDist] = useState(0.18);
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  // State (not just ref) so Canvas re-renders when video mounts
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+
   const streamRef = useRef<MediaStream | null>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const mediapipeInitRef = useRef(false);
 
   const requestPermissions = async () => {
@@ -201,38 +240,32 @@ export default function Studio() {
   };
 
   const initAudioAnalysis = useCallback((stream: MediaStream) => {
-    const audioCtx = new AudioContext();
-    const analyser = audioCtx.createAnalyser();
-    const source = audioCtx.createMediaStreamSource(stream);
-    source.connect(analyser);
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    ctx.createMediaStreamSource(stream).connect(analyser);
     analyser.fftSize = 256;
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
+    const buf = new Uint8Array(analyser.frequencyBinCount);
     let active = true;
-    const update = () => {
+    const tick = () => {
       if (!active) return;
-      analyser.getByteFrequencyData(dataArray);
-      let sum = 0;
-      for (let i = 0; i < bufferLength; i++) sum += dataArray[i];
-      setAudioLevel(sum / bufferLength / 255);
-      requestAnimationFrame(update);
+      analyser.getByteFrequencyData(buf);
+      setAudioLevel(buf.reduce((a, b) => a + b, 0) / buf.length / 255);
+      requestAnimationFrame(tick);
     };
-    update();
+    tick();
     return () => { active = false; };
   }, []);
 
-  const initMediaPipe = useCallback((stream: MediaStream) => {
-    if (!videoRef.current || mediapipeInitRef.current) return;
+  const initMediaPipe = useCallback((stream: MediaStream, video: HTMLVideoElement) => {
+    if (mediapipeInitRef.current) return;
     mediapipeInitRef.current = true;
 
-    const video = videoRef.current;
     video.srcObject = stream;
     video.play().catch(() => {});
 
     const faceMesh = new FaceMesh({
       locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${file}`,
     });
-
     faceMesh.setOptions({
       maxNumFaces: 1,
       refineLandmarks: false,
@@ -244,72 +277,68 @@ export default function Studio() {
       const detected = !!(results.multiFaceLandmarks?.length);
       setFaceDetected(detected);
 
-      if (detected) {
-        const lm = results.multiFaceLandmarks[0];
+      const ctx2d = overlayCanvasRef.current?.getContext("2d");
+      if (ctx2d && overlayCanvasRef.current) {
+        ctx2d.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
+      }
 
-        // Compute bounding box of all face landmarks
-        let minX = 1, maxX = 0, minY = 1, maxY = 0;
-        for (const pt of lm) {
-          if (pt.x < minX) minX = pt.x;
-          if (pt.x > maxX) maxX = pt.x;
-          if (pt.y < minY) minY = pt.y;
-          if (pt.y > maxY) maxY = pt.y;
-        }
-        const cx = (minX + maxX) / 2;
-        const cy = (minY + maxY) / 2;
-        const size = Math.max(maxX - minX, maxY - minY);
-        setFaceCenter([cx, cy]);
-        setFaceSize(size);
+      if (!detected) return;
 
-        // Head pose from key landmarks
-        const nose = lm[1];
-        const leftEye = lm[33];
-        const rightEye = lm[263];
-        const pitch = (nose.y - (leftEye.y + rightEye.y) / 2) * -Math.PI * 0.7;
-        const yaw = (nose.x - 0.5) * Math.PI * 0.7;
-        const roll = (leftEye.y - rightEye.y) * Math.PI * 0.7;
-        setHeadRotation([pitch, yaw, roll]);
+      const lm = results.multiFaceLandmarks[0];
 
-        // Draw dots overlay on the webcam panel
-        const ctx = overlayCanvasRef.current?.getContext("2d");
-        if (ctx && overlayCanvasRef.current) {
-          ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
-          ctx.fillStyle = "rgba(0,255,255,0.8)";
-          for (const pt of lm) {
-            ctx.beginPath();
-            ctx.arc(pt.x * overlayCanvasRef.current.width, pt.y * overlayCanvasRef.current.height, 1.2, 0, 2 * Math.PI);
-            ctx.fill();
-          }
-        }
-      } else {
-        const ctx = overlayCanvasRef.current?.getContext("2d");
-        if (ctx && overlayCanvasRef.current) ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
+      // Eye-to-eye distance (landmarks 33=left outer, 263=right outer)
+      const ed = Math.abs(lm[263].x - lm[33].x);
+      setEyeDist(ed);
+
+      // Face center from eyes + nose tip (landmark 1)
+      const nose = lm[1];
+      const cx = (lm[33].x + lm[263].x) / 2;
+      // Center Y: midpoint between eyes and chin (152)
+      const cy = (lm[33].y + lm[263].y) / 2 * 0.4 + nose.y * 0.6;
+      setFaceCenter([cx, cy]);
+
+      // Head rotation
+      const leftEye = lm[33];
+      const rightEye = lm[263];
+      const pitch = (nose.y - (leftEye.y + rightEye.y) / 2) * -Math.PI * 0.7;
+      const yaw = (nose.x - 0.5) * Math.PI * 0.7;
+      const roll = (leftEye.y - rightEye.y) * Math.PI * 0.7;
+      setHeadRotation([pitch, yaw, roll]);
+
+      // Draw face-mesh dots on the source panel
+      if (!ctx2d || !overlayCanvasRef.current) return;
+      const oc = overlayCanvasRef.current;
+      ctx2d.fillStyle = "rgba(0,255,200,0.75)";
+      for (const pt of lm) {
+        ctx2d.beginPath();
+        ctx2d.arc(pt.x * oc.width, pt.y * oc.height, 1.1, 0, 2 * Math.PI);
+        ctx2d.fill();
       }
     });
 
-    const camera = new Camera(video, {
+    const cam = new Camera(video, {
       onFrame: async () => {
         if (video.readyState >= 2) await faceMesh.send({ image: video });
       },
       width: 640,
       height: 480,
     });
-    camera.start();
+    cam.start();
   }, []);
 
-  // Wait for DOM to paint after hasPermission flip, then init
+  // Init after permission granted and video element mounted
   useEffect(() => {
-    if (hasPermission !== true || !streamRef.current) return;
+    if (hasPermission !== true || !streamRef.current || !videoEl) return;
     const stream = streamRef.current;
     const cleanupAudio = initAudioAnalysis(stream);
-    const timer = setTimeout(() => initMediaPipe(stream), 150);
-    return () => { clearTimeout(timer); if (cleanupAudio) cleanupAudio(); };
-  }, [hasPermission, initAudioAnalysis, initMediaPipe]);
+    const t = setTimeout(() => initMediaPipe(stream, videoEl), 120);
+    return () => { clearTimeout(t); if (cleanupAudio) cleanupAudio(); };
+  }, [hasPermission, videoEl, initAudioAnalysis, initMediaPipe]);
 
   useEffect(() => {
-    let interval: ReturnType<typeof setInterval>;
+    let iv: ReturnType<typeof setInterval>;
     if (isStreaming) {
-      interval = setInterval(() => {
+      iv = setInterval(() => {
         setElapsed((e) => e + 1);
         setFps(Math.floor(Math.random() * 5 + 55));
       }, 1000);
@@ -317,12 +346,13 @@ export default function Studio() {
       setElapsed(0);
       setFps(0);
     }
-    return () => clearInterval(interval);
+    return () => clearInterval(iv);
   }, [isStreaming]);
 
-  const formatTime = (s: number) =>
+  const fmt = (s: number) =>
     `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
 
+  // ── Permission screens ────────────────────────────────────────────────────
   if (hasPermission === false) {
     return (
       <Layout>
@@ -330,7 +360,7 @@ export default function Studio() {
           <div className="max-w-md text-center space-y-6 p-8 border border-destructive/20 bg-destructive/5 rounded-lg">
             <Video className="w-12 h-12 text-destructive mx-auto" />
             <h2 className="text-xl font-bold text-destructive">Accès caméra refusé</h2>
-            <p className="text-muted-foreground">DeepFaceLive nécessite l'accès à la caméra et au micro.</p>
+            <p className="text-muted-foreground">Autorisez la caméra et le micro dans votre navigateur.</p>
             <Button onClick={() => { mediapipeInitRef.current = false; requestPermissions(); }} className="w-full">
               Réessayer
             </Button>
@@ -349,7 +379,7 @@ export default function Studio() {
             <Video className="w-16 h-16 text-primary mx-auto mb-4" />
             <h2 className="text-2xl font-bold font-mono tracking-tight">Studio Setup</h2>
             <p className="text-muted-foreground text-sm">
-              Accès à la caméra et au microphone requis pour commencer le tracking facial.
+              Accès caméra + micro requis pour le tracking facial en temps réel.
             </p>
             <Button onClick={requestPermissions} size="lg" className="w-full font-bold uppercase tracking-wider">
               Grant Access
@@ -360,34 +390,30 @@ export default function Studio() {
     );
   }
 
+  // ── Main studio view ──────────────────────────────────────────────────────
   return (
     <Layout>
       <div className="flex flex-col h-full bg-background p-4 gap-4">
+
         {/* Top bar */}
-        <div className="flex items-center justify-between bg-card border border-border p-3 rounded-lg">
+        <div className="flex items-center justify-between bg-card border border-border p-3 rounded-lg shrink-0">
           <div className="flex items-center gap-4">
             <Badge variant="outline" className="font-mono text-xs uppercase bg-black/40 border-primary/30 text-primary">
               <Zap className="w-3 h-3 mr-1 inline" />
-              {activeAvatar?.name || "No Avatar"}
+              {activeAvatar?.name ?? "No Avatar"}
             </Badge>
-            <Badge
-              variant="outline"
-              className={`font-mono text-xs uppercase border ${faceDetected ? "border-primary/40 text-primary bg-primary/10" : "border-border text-muted-foreground"}`}
-            >
+            <Badge variant="outline" className={`font-mono text-xs uppercase border transition-colors ${faceDetected ? "border-primary/40 text-primary bg-primary/10" : "border-border text-muted-foreground"}`}>
               <span className={`inline-block w-2 h-2 rounded-full mr-2 ${faceDetected ? "bg-primary animate-pulse" : "bg-muted-foreground"}`} />
               {faceDetected ? "Visage détecté" : "Aucun visage"}
             </Badge>
           </div>
-
           <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
-              <Activity className="w-4 h-4" />
-              <span>{fps > 0 ? `${fps} FPS` : "—"}</span>
-            </div>
-            <div className="flex items-center gap-2 font-mono text-xs">
-              <Clock className="w-4 h-4 text-muted-foreground" />
-              <span className={isStreaming ? "text-primary font-bold" : "text-muted-foreground"}>{formatTime(elapsed)}</span>
-            </div>
+            <span className="font-mono text-xs text-muted-foreground flex items-center gap-1">
+              <Activity className="w-4 h-4" />{fps > 0 ? `${fps} FPS` : "—"}
+            </span>
+            <span className={`font-mono text-xs flex items-center gap-1 ${isStreaming ? "text-primary font-bold" : "text-muted-foreground"}`}>
+              <Clock className="w-4 h-4" />{fmt(elapsed)}
+            </span>
             {isStreaming ? (
               <Button variant="destructive" size="sm" onClick={() => setIsStreaming(false)} className="animate-pulse">
                 <Square className="w-4 h-4 mr-2 fill-current" /> STOP
@@ -400,18 +426,22 @@ export default function Studio() {
           </div>
         </div>
 
-        {/* Main panels */}
+        {/* Panels */}
         <div className="flex-1 flex gap-4 min-h-0">
-          {/* LEFT — Raw webcam feed */}
-          <div className="w-[38%] flex flex-col gap-3">
-            <div className="flex-1 relative bg-black rounded-lg overflow-hidden border border-border">
-              {/* Hidden video used as source for both panels */}
+
+          {/* LEFT — source webcam */}
+          <div className="w-[38%] flex flex-col gap-3 min-h-0">
+            <div className="flex-1 relative bg-black rounded-lg overflow-hidden border border-border min-h-0">
+              {/*
+                Callback ref → state so Three.js Canvas re-renders when video mounts.
+                The video is hidden (opacity-0) because Three.js renders it as background.
+              */}
               <video
-                ref={videoRef}
+                ref={(el) => { if (el && el !== videoEl) setVideoEl(el); }}
                 autoPlay
                 playsInline
                 muted
-                className="absolute inset-0 w-full h-full object-cover opacity-60"
+                className="absolute inset-0 w-full h-full object-cover opacity-50"
               />
               <canvas
                 ref={overlayCanvasRef}
@@ -424,17 +454,13 @@ export default function Studio() {
               </div>
             </div>
 
-            {/* Controls card */}
             <Card className="bg-card border-border p-4 flex items-center justify-between gap-4 shrink-0">
-              <div className="flex flex-col gap-1 w-28">
+              <div className="flex flex-col gap-1.5 w-28">
                 <Label className="text-xs uppercase font-mono text-muted-foreground flex items-center gap-1">
                   <Mic className="w-3 h-3" /> Micro
                 </Label>
-                <div className="h-2 bg-black rounded-full overflow-hidden border border-border">
-                  <div
-                    className="h-full bg-primary transition-all duration-75 rounded-full"
-                    style={{ width: `${audioLevel * 100}%` }}
-                  />
+                <div className="h-1.5 bg-black rounded-full overflow-hidden border border-border">
+                  <div className="h-full bg-primary transition-all duration-75 rounded-full" style={{ width: `${audioLevel * 100}%` }} />
                 </div>
               </div>
               <div className="flex items-center gap-4">
@@ -450,35 +476,34 @@ export default function Studio() {
             </Card>
           </div>
 
-          {/* RIGHT — Avatar overlaid on video */}
-          <div className="flex-1 relative rounded-lg overflow-hidden border border-primary/20 shadow-[0_0_40px_rgba(0,255,255,0.07)] bg-black">
+          {/* RIGHT — avatar overlaid on video */}
+          <div className="flex-1 relative rounded-lg overflow-hidden border border-primary/20 shadow-[0_0_40px_rgba(0,255,255,0.07)] bg-black min-h-0">
             <Canvas
               camera={{ position: [0, 0, 3], fov: 60 }}
               gl={{ antialias: true, alpha: false }}
               style={{ width: "100%", height: "100%" }}
             >
               <AvatarScene
-                videoEl={videoRef.current}
+                videoEl={videoEl}
                 headRotation={headRotation}
                 faceCenter={faceCenter}
-                faceSize={faceSize}
+                eyeDist={eyeDist}
                 faceDetected={faceDetected}
               />
             </Canvas>
 
-            {/* Labels */}
-            <div className="absolute top-3 right-3 font-mono text-xs text-emerald-400 bg-black/60 px-2 py-1 rounded flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${isStreaming ? "bg-red-500 animate-pulse" : "bg-border"}`} />
+            <div className="absolute top-3 right-3 font-mono text-xs text-emerald-400 bg-black/60 px-2 py-1 rounded flex items-center gap-2 pointer-events-none">
+              <span className={`w-2 h-2 rounded-full ${isStreaming ? "bg-red-500 animate-pulse" : "bg-border"}`} />
               {isStreaming ? "LIVE OUTPUT" : "PREVIEW"}
             </div>
-            <div className="absolute bottom-3 left-3 font-mono text-xs text-primary/50 bg-black/40 px-2 py-1 rounded">
+            <div className="absolute bottom-3 left-3 font-mono text-xs text-primary/50 bg-black/40 px-2 py-1 rounded pointer-events-none">
               AVATAR: {activeAvatar?.name?.toUpperCase() ?? "NONE"}
             </div>
 
             {!faceDetected && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <p className="font-mono text-xs text-primary/30 uppercase tracking-widest">
-                  En attente du visage...
+                <p className="font-mono text-xs text-primary/25 uppercase tracking-widest animate-pulse">
+                  Pointez la caméra vers votre visage…
                 </p>
               </div>
             )}
