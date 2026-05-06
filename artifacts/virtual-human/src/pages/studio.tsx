@@ -10,104 +10,79 @@ import { Play, Square, Video, Mic, Activity, Clock, Zap } from "lucide-react";
 import { FaceMesh } from "@mediapipe/face_mesh";
 import { Camera } from "@mediapipe/camera_utils";
 
-// ─── Landmark index groups (MediaPipe Face Mesh, 468 pts) ─────────────────────
+// ─── Face Mesh landmark groups ────────────────────────────────────────────────
 const FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
 const LEFT_EYE  = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
 const RIGHT_EYE = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
-// 5-point brow (single lower edge row — avoids overly-thick strokes)
-const LEFT_BROW = [55, 65, 52, 53, 46];
-const RIGHT_BROW= [285, 295, 282, 283, 276];
-const LIPS_OUT  = [61,185,40,39,37,0,267,269,270,409,291,375,321,405,314,17,84,181,91,146];
-const LIPS_IN   = [78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95];
+// Upper eyelid only (for lash drawing)
+const LEFT_EYE_UPPER  = [246,161,160,159,158,157,173,133];
+const RIGHT_EYE_UPPER = [466,388,387,386,385,384,398,362];
+const LIPS_OUT = [61,185,40,39,37,0,267,269,270,409,291,375,321,405,314,17,84,181,91,146];
+const LIPS_IN  = [78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95];
 
-// MediaPipe Camera sends frames at this resolution
 const VID_W = 640;
 const VID_H = 480;
 
-// ─── Object-cover transform ────────────────────────────────────────────────────
-// Maps a normalized landmark (lm.x ∈ [0,1], lm.y ∈ [0,1]) from the video frame
-// to canvas device-pixel coordinates, applying the same crop that CSS object-cover does.
-// mirrored=true: also flips x to match a scaleX(-1) video element.
-function lmToCanvas(
-  lmX: number, lmY: number,
-  canW: number, canH: number,
-  mirrored: boolean,
-): { x: number; y: number } {
-  // object-cover scale: pick the dimension that fills the canvas
-  const scaleX = canW / VID_W;
-  const scaleY = canH / VID_H;
-  const scale  = Math.max(scaleX, scaleY);
-
-  // offset of the top-left corner of the scaled video within the canvas
-  const offX = (VID_W * scale - canW) / 2;
-  const offY = (VID_H * scale - canH) / 2;
-
-  const vx = mirrored ? (1 - lmX) : lmX;
-  return {
-    x: vx * VID_W * scale - offX,
-    y: lmY * VID_H * scale - offY,
-  };
+// ─── Object-cover landmark projection ────────────────────────────────────────
+function lmToCanvas(lx: number, ly: number, cW: number, cH: number, mirrored: boolean) {
+  const scale = Math.max(cW / VID_W, cH / VID_H);
+  const offX  = (VID_W * scale - cW) / 2;
+  const offY  = (VID_H * scale - cH) / 2;
+  const x     = (mirrored ? 1 - lx : lx) * VID_W * scale - offX;
+  const y     = ly * VID_H * scale - offY;
+  return { x, y };
 }
 
-// ─── Color helpers ─────────────────────────────────────────────────────────────
+// ─── Color palettes ───────────────────────────────────────────────────────────
 function getSkin(tone?: string) {
   switch ((tone ?? "").toLowerCase()) {
-    case "light": return { base: "#F5CBA7", shadow: "#C49070", highlight: "#FFE8C8" };
-    case "dark":  return { base: "#8B5E3C", shadow: "#5A3820", highlight: "#A87050" };
-    default:      return { base: "#D4956A", shadow: "#A06840", highlight: "#E8B080" };
+    case "light": return { base: "#F2C9A0", shadow: "#C09060", hi: "#FFF0DC", deep: "#A06840" };
+    case "dark":  return { base: "#8A5C38", shadow: "#50301A", hi: "#B07848", deep: "#3A2010" };
+    default:      return { base: "#CF9060", shadow: "#9A6030", hi: "#E8B078", deep: "#7A4020" };
   }
 }
-function getHair(color?: string): string {
-  switch ((color ?? "").toLowerCase()) {
-    case "black":  return "#1C1C1C";
-    case "brown":  return "#6B4226";
-    case "blonde": return "#C8920A";
-    case "red":    return "#B83020";
-    case "white":  return "#D8D0C0";
-    default:       return "#1C1C1C";
+function getHair(c?: string) {
+  switch ((c ?? "").toLowerCase()) {
+    case "black":  return "#1A1A1A";
+    case "brown":  return "#5A3820";
+    case "blonde": return "#C08010";
+    case "red":    return "#AA2818";
+    case "white":  return "#D0C8B8";
+    default:       return "#1A1A1A";
   }
 }
-function getEye(color?: string): string {
-  switch ((color ?? "").toLowerCase()) {
-    case "blue":   return "#3A7DC9";
-    case "green":  return "#2E8B57";
-    case "gray":   return "#708090";
-    case "cyan":   return "#00A0B0";
-    case "purple": return "#7B35A0";
-    default:       return "#7B5726"; // brown
+function getEye(c?: string) {
+  switch ((c ?? "").toLowerCase()) {
+    case "blue":   return "#2A70C8";
+    case "green":  return "#228850";
+    case "gray":   return "#607080";
+    case "cyan":   return "#008898";
+    case "purple": return "#6830A0";
+    default:       return "#704820";
   }
 }
-function getLip(skinTone?: string) {
-  switch ((skinTone ?? "").toLowerCase()) {
-    case "dark":  return { fill: "#904040", shadow: "#602020" };
-    case "light": return { fill: "#D08878", shadow: "#A05050" };
-    default:      return { fill: "#B86860", shadow: "#904850" };
+function getLip(tone?: string) {
+  switch ((tone ?? "").toLowerCase()) {
+    case "dark":  return { fill: "#7A3030", mid: "#5A1818", hi: "rgba(200,140,120,0.35)" };
+    case "light": return { fill: "#C07868", mid: "#904848", hi: "rgba(255,220,205,0.42)" };
+    default:      return { fill: "#A85858", mid: "#783838", hi: "rgba(255,205,185,0.40)" };
   }
 }
 
 type LM = { x: number; y: number; z: number };
 
-// ─── Realistic face renderer ───────────────────────────────────────────────────
-function drawFace(
+// ─── Modern face renderer ─────────────────────────────────────────────────────
+function drawModernFace(
   ctx: CanvasRenderingContext2D,
   lm: LM[],
-  canW: number,
-  canH: number,
-  skinTone?: string,
-  hairCol?: string,
-  eyeCol?: string,
+  cW: number, cH: number,
+  skinTone?: string, hairCol?: string, eyeCol?: string,
   mirrored = true,
 ) {
-  // Map a landmark index to canvas coordinates, applying object-cover alignment
-  const pt = (i: number) => lmToCanvas(lm[i].x, lm[i].y, canW, canH, mirrored);
-
-  // Draw a closed/open path from an array of landmark indices
-  const path = (indices: number[], close = true) => {
+  const pt    = (i: number) => lmToCanvas(lm[i].x, lm[i].y, cW, cH, mirrored);
+  const path  = (ids: number[], close = true) => {
     ctx.beginPath();
-    indices.forEach((i, j) => {
-      const { x, y } = pt(i);
-      j === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
+    ids.forEach((id, j) => { const p = pt(id); j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y); });
     if (close) ctx.closePath();
   };
 
@@ -116,285 +91,392 @@ function drawFace(
   const eye  = getEye(eyeCol);
   const lip  = getLip(skinTone);
 
-  // ── Reference measurements ──────────────────────────────────────
-  const topHead = pt(10);
-  const foreL   = pt(109);
-  const foreR   = pt(338);
-  const chin    = pt(152);
-  // Face width from left jaw to right jaw
-  const faceW   = Math.abs(pt(356).x - pt(127).x);
+  // Key reference geometry
+  const top    = pt(10);
+  const foreL  = pt(109);
+  const foreR  = pt(338);
+  const chin   = pt(152);
+  const lJaw   = pt(127);
+  const rJaw   = pt(356);
+  const faceW  = Math.abs(rJaw.x - lJaw.x);
+  const faceH  = Math.abs(chin.y - top.y);
 
-  // ── 1. EARS ────────────────────────────────────────────────────
-  const lEar = pt(234);
-  const rEar = pt(454);
-  const earH = Math.abs(pt(127).y - pt(234).y) * 0.42 + faceW * 0.03;
-  const earW = earH * 0.55;
-
+  // ════════════════════════════════════════════════════════════════
+  //  LAYER 0 — EARS (behind face)
+  // ════════════════════════════════════════════════════════════════
+  const lEar   = pt(234);
+  const rEar   = pt(454);
+  const earH   = faceW * 0.15;
+  const earW   = earH * 0.52;
   ctx.save();
   ctx.fillStyle   = skin.base;
   ctx.strokeStyle = skin.shadow;
   ctx.lineWidth   = 1;
-  // left ear
-  ctx.beginPath();
-  ctx.ellipse(lEar.x - earW * 0.35, lEar.y, earW, earH, 0, 0, Math.PI * 2);
-  ctx.fill(); ctx.stroke();
-  // right ear
-  ctx.beginPath();
-  ctx.ellipse(rEar.x + earW * 0.35, rEar.y, earW, earH, 0, 0, Math.PI * 2);
-  ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(lEar.x - earW * 0.4, lEar.y, earW, earH, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(rEar.x + earW * 0.4, rEar.y, earW, earH, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   ctx.restore();
 
-  // ── 2. HAIR CAP (tight to skull, natural hairline) ─────────────
-  const hairH = faceW * 0.20; // keep close to skull
+  // ════════════════════════════════════════════════════════════════
+  //  LAYER 1 — HAIR (tight cap, bezier arch)
+  // ════════════════════════════════════════════════════════════════
+  const capH = faceW * 0.18;
   ctx.save();
   ctx.fillStyle = hair;
   ctx.beginPath();
-  ctx.moveTo(foreL.x - faceW * 0.05, foreL.y + faceW * 0.02);
+  ctx.moveTo(foreL.x - faceW * 0.04, foreL.y + faceW * 0.01);
   ctx.bezierCurveTo(
-    foreL.x - faceW * 0.07, topHead.y - hairH,
-    foreR.x + faceW * 0.07, topHead.y - hairH,
-    foreR.x + faceW * 0.05, foreR.y + faceW * 0.02,
+    foreL.x - faceW * 0.06, top.y - capH,
+    foreR.x + faceW * 0.06, top.y - capH,
+    foreR.x + faceW * 0.04, foreR.y + faceW * 0.01,
   );
   ctx.lineTo(foreR.x, foreR.y);
-  ctx.lineTo(topHead.x, topHead.y);
+  ctx.lineTo(top.x, top.y);
   ctx.lineTo(foreL.x, foreL.y);
   ctx.closePath();
   ctx.fill();
-  // sheen
-  const hg = ctx.createLinearGradient(topHead.x - faceW * 0.1, topHead.y - hairH, topHead.x + faceW * 0.2, topHead.y);
-  hg.addColorStop(0, "rgba(255,255,255,0.09)");
-  hg.addColorStop(0.4, "rgba(255,255,255,0)");
+  // Hair sheen
+  const hg = ctx.createLinearGradient(top.x - faceW * 0.15, top.y - capH, top.x + faceW * 0.15, top.y);
+  hg.addColorStop(0, "rgba(255,255,255,0.13)");
+  hg.addColorStop(0.5, "rgba(255,255,255,0)");
   ctx.fillStyle = hg;
   ctx.fill();
   ctx.restore();
 
-  // ── 3. FACE OVAL (skin base) ───────────────────────────────────
+  // ════════════════════════════════════════════════════════════════
+  //  LAYER 2 — FACE BASE SKIN
+  // ════════════════════════════════════════════════════════════════
   path(FACE_OVAL);
-  ctx.fillStyle = skin.base;
-  ctx.fill();
-
-  // Forehead highlight → chin shadow gradient
-  const sg = ctx.createLinearGradient(topHead.x, topHead.y, topHead.x, chin.y);
-  sg.addColorStop(0,    "rgba(255,240,210,0.22)");
-  sg.addColorStop(0.30, "rgba(255,255,255,0)");
-  sg.addColorStop(1,    "rgba(0,0,0,0.20)");
-  path(FACE_OVAL);
-  ctx.fillStyle = sg;
-  ctx.fill();
-
-  // Subtle cheek blush
-  const blushR = faceW * 0.11;
-  [pt(50), pt(280)].forEach(c => {
-    const bg = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, blushR);
-    bg.addColorStop(0, "rgba(220,100,85,0.12)");
-    bg.addColorStop(1, "rgba(220,100,85,0)");
-    ctx.beginPath();
-    ctx.arc(c.x, c.y, blushR, 0, Math.PI * 2);
-    ctx.fillStyle = bg;
-    ctx.fill();
-  });
-
-  // ── 4. EYEBROWS ────────────────────────────────────────────────
-  const browCol = hair === "#D8D0C0" ? "#908060" : hair;
   ctx.save();
-  ctx.strokeStyle = browCol;
-  ctx.lineWidth   = faceW * 0.015; // thin and natural
-  ctx.lineCap     = "round";
-  ctx.lineJoin    = "round";
-  [LEFT_BROW, RIGHT_BROW].forEach(brow => {
-    const pts = brow.map(i => pt(i));
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
-    ctx.stroke();
-  });
+  ctx.globalAlpha = 0.88; // semi-transparent — real face bleeds through
+  ctx.fillStyle   = skin.base;
+  ctx.fill();
+  ctx.globalAlpha = 1;
   ctx.restore();
 
-  // ── 5. EYES ────────────────────────────────────────────────────
-  const drawEye = (indices: number[]) => {
-    const pts  = indices.map(i => pt(i));
-    const xs   = pts.map(p => p.x);
-    const ys   = pts.map(p => p.y);
+  // ── Multi-layer gradient contouring ──────────────────────────
+  // Forehead highlight
+  const fg = ctx.createRadialGradient(top.x, foreL.y + faceH * 0.08, 0, top.x, foreL.y, faceW * 0.38);
+  fg.addColorStop(0,    "rgba(255,245,225,0.28)");
+  fg.addColorStop(0.6,  "rgba(255,245,225,0)");
+  path(FACE_OVAL); ctx.fillStyle = fg; ctx.fill();
+
+  // Temple & jaw shadow (gives 3D structure)
+  const tsg = ctx.createLinearGradient(lJaw.x, lJaw.y, rJaw.x, rJaw.y);
+  tsg.addColorStop(0,    `rgba(0,0,0,0.22)`);
+  tsg.addColorStop(0.18, "rgba(0,0,0,0)");
+  tsg.addColorStop(0.82, "rgba(0,0,0,0)");
+  tsg.addColorStop(1,    `rgba(0,0,0,0.22)`);
+  path(FACE_OVAL); ctx.fillStyle = tsg; ctx.fill();
+
+  // Top-to-chin shading (darkens chin)
+  const cg = ctx.createLinearGradient(top.x, top.y, top.x, chin.y);
+  cg.addColorStop(0,   "rgba(255,235,205,0.10)");
+  cg.addColorStop(0.5, "rgba(0,0,0,0)");
+  cg.addColorStop(1,   "rgba(0,0,0,0.20)");
+  path(FACE_OVAL); ctx.fillStyle = cg; ctx.fill();
+
+  // Cheekbone specular highlights
+  [pt(50), pt(280)].forEach((c, i) => {
+    const cx = c.x + (i === 0 ? faceW * 0.04 : -faceW * 0.04);
+    const cy = c.y - faceW * 0.02;
+    const cg2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, faceW * 0.10);
+    cg2.addColorStop(0, "rgba(255,245,225,0.20)");
+    cg2.addColorStop(1, "rgba(255,245,225,0)");
+    ctx.beginPath(); ctx.arc(cx, cy, faceW * 0.10, 0, Math.PI * 2);
+    ctx.fillStyle = cg2; ctx.fill();
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  //  LAYER 3 — EYEBROWS (modern tapered bezier arch)
+  // ════════════════════════════════════════════════════════════════
+  const browColor = hair === "#D0C8B8" ? "#807050" : hair;
+  const drawBrow  = (outer: number, peak: number, inner: number, side: "L" | "R") => {
+    const o = pt(outer), p2 = pt(peak), inn = pt(inner);
+    const thickness = faceW * 0.013;
+    // Draw brow as a filled tapered shape
+    ctx.save();
+    ctx.fillStyle = browColor;
+
+    // offset vectors for thickness
+    const dx = p2.x - o.x, dy = p2.y - o.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len * thickness, ny = dx / len * thickness;
+
+    ctx.beginPath();
+    // bottom edge (outer → inner)
+    ctx.moveTo(o.x, o.y);
+    ctx.bezierCurveTo(
+      o.x + (p2.x - o.x) * 0.3, o.y + (p2.y - o.y) * 0.3,
+      p2.x + (inn.x - p2.x) * 0.3, p2.y + (inn.y - p2.y) * 0.3,
+      inn.x, inn.y,
+    );
+    // top edge (inner → outer) — offset upward by thickness
+    ctx.lineTo(inn.x - nx * 0.4, inn.y - ny * 0.4);
+    ctx.bezierCurveTo(
+      p2.x + (inn.x - p2.x) * 0.3 - nx * 0.8, p2.y + (inn.y - p2.y) * 0.3 - ny * 0.8,
+      o.x + (p2.x - o.x) * 0.3 - nx, o.y + (p2.y - o.y) * 0.3 - ny,
+      o.x - nx * 0.5, o.y - ny * 0.5,
+    );
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  };
+  // Brow landmark indices: outer, peak, inner for each side
+  drawBrow(46, 52, 55, "L");
+  drawBrow(276, 282, 285, "R");
+
+  // ════════════════════════════════════════════════════════════════
+  //  LAYER 4 — EYES (modern detailed)
+  // ════════════════════════════════════════════════════════════════
+  const drawEye = (eyeIds: number[], upperIds: number[]) => {
+    const pts  = eyeIds.map(i => pt(i));
+    const xs   = pts.map(p => p.x), ys = pts.map(p => p.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs);
     const minY = Math.min(...ys), maxY = Math.max(...ys);
     const cx   = (minX + maxX) / 2;
     const cy   = (minY + maxY) / 2;
+    const ew   = maxX - minX;
     const eh   = maxY - minY;
-    // Iris ~50% of opening height → human proportion
-    const irisR = Math.max(eh * 0.50, 2);
+    const irisR = Math.max(eh * 0.54, 3);
 
     ctx.save();
-    path(indices);
+    path(eyeIds);
     ctx.clip();
 
-    // Sclera (warm white)
-    ctx.fillStyle = "#F6F0EA";
-    ctx.fill();
+    // Sclera — warm white with subtle limbal shadow
+    const scleraG = ctx.createRadialGradient(cx, cy, 0, cx, cy, ew * 0.55);
+    scleraG.addColorStop(0,   "#F5EDE4");
+    scleraG.addColorStop(0.7, "#EDE0D4");
+    scleraG.addColorStop(1,   "#D4C0A8");
+    ctx.fillStyle = scleraG;
+    ctx.fillRect(minX - 2, minY - 2, ew + 4, eh + 4);
 
-    // Iris with radial gradient
-    const ig = ctx.createRadialGradient(cx, cy - irisR * 0.08, 0, cx, cy, irisR);
-    ig.addColorStop(0,    eye);
-    ig.addColorStop(0.72, eye);
-    ig.addColorStop(1,    skin.shadow);
-    ctx.beginPath();
-    ctx.arc(cx, cy, irisR, 0, Math.PI * 2);
-    ctx.fillStyle = ig;
-    ctx.fill();
+    // Iris — multi-stop radial gradient for depth
+    const iG = ctx.createRadialGradient(cx - irisR * 0.1, cy - irisR * 0.12, 0, cx, cy, irisR);
+    iG.addColorStop(0,    lighten(eye, 40));
+    iG.addColorStop(0.35, eye);
+    iG.addColorStop(0.75, eye);
+    iG.addColorStop(0.88, darken(eye, 30));
+    iG.addColorStop(1,    "#0A0A0A");
+    ctx.beginPath(); ctx.arc(cx, cy, irisR, 0, Math.PI * 2);
+    ctx.fillStyle = iG; ctx.fill();
 
-    // Dark iris limbal ring
-    ctx.beginPath();
-    ctx.arc(cx, cy, irisR, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(0,0,0,0.30)";
-    ctx.lineWidth   = irisR * 0.12;
-    ctx.stroke();
+    // Iris texture (radial lines for depth)
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, irisR, 0, Math.PI * 2); ctx.clip();
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 14) {
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * irisR * 0.25, cy + Math.sin(a) * irisR * 0.25);
+      ctx.lineTo(cx + Math.cos(a) * irisR * 0.92, cy + Math.sin(a) * irisR * 0.92);
+      ctx.strokeStyle = "rgba(0,0,0,0.08)";
+      ctx.lineWidth   = 0.8;
+      ctx.stroke();
+    }
+    ctx.restore();
 
-    // Pupil
-    ctx.beginPath();
-    ctx.arc(cx, cy, irisR * 0.42, 0, Math.PI * 2);
-    ctx.fillStyle = "#080808";
-    ctx.fill();
+    // Pupil — soft edge
+    const pG = ctx.createRadialGradient(cx, cy, 0, cx, cy, irisR * 0.44);
+    pG.addColorStop(0.6, "#060606");
+    pG.addColorStop(1,   "rgba(6,6,6,0)");
+    ctx.beginPath(); ctx.arc(cx, cy, irisR * 0.44, 0, Math.PI * 2);
+    ctx.fillStyle = pG; ctx.fill();
 
-    // Primary specular catchlight
-    ctx.beginPath();
-    ctx.arc(cx + irisR * 0.28, cy - irisR * 0.28, irisR * 0.18, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255,255,255,0.90)";
-    ctx.fill();
+    // Main catchlight
+    const cl = ctx.createRadialGradient(
+      cx + irisR * 0.28, cy - irisR * 0.30, 0,
+      cx + irisR * 0.28, cy - irisR * 0.30, irisR * 0.20,
+    );
+    cl.addColorStop(0, "rgba(255,255,255,0.95)");
+    cl.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.beginPath(); ctx.arc(cx + irisR * 0.28, cy - irisR * 0.30, irisR * 0.20, 0, Math.PI * 2);
+    ctx.fillStyle = cl; ctx.fill();
+    // Secondary small catchlight
+    ctx.beginPath(); ctx.arc(cx - irisR * 0.18, cy + irisR * 0.24, irisR * 0.08, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,0.45)"; ctx.fill();
 
-    // Tiny secondary catchlight
-    ctx.beginPath();
-    ctx.arc(cx - irisR * 0.20, cy + irisR * 0.20, irisR * 0.08, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255,255,255,0.40)";
-    ctx.fill();
+    // Upper lid shade — gives eyelid depth
+    const ulg = ctx.createLinearGradient(cx, minY, cx, cy);
+    ulg.addColorStop(0, "rgba(0,0,0,0.32)");
+    ulg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = ulg;
+    ctx.fillRect(minX - 2, minY, ew + 4, (eh) * 0.6);
 
     ctx.restore();
 
-    // Upper eyelid shade (depth)
+    // Lash line — dark, smooth outline
     ctx.save();
-    path(indices);
-    ctx.clip();
-    const lg = ctx.createLinearGradient(cx, minY, cx, cy);
-    lg.addColorStop(0, "rgba(0,0,0,0.25)");
-    lg.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillRect(minX - 2, minY, maxX - minX + 4, (maxY - minY) * 0.55);
-    ctx.fillStyle = lg;
-    ctx.fill();
+    path(eyeIds);
+    ctx.strokeStyle = "rgba(10,10,10,0.90)";
+    ctx.lineWidth   = 1.8;
+    ctx.lineJoin    = "round";
+    ctx.stroke();
     ctx.restore();
 
-    // Lash line
+    // Fan lashes (top only) — draw radial lines from upper lid
     ctx.save();
-    path(indices);
-    ctx.strokeStyle = "#0A0A0A";
-    ctx.lineWidth   = 1.5;
-    ctx.stroke();
+    const upperPts = upperIds.map(i => pt(i));
+    ctx.strokeStyle = "rgba(10,10,10,0.80)";
+    ctx.lineCap     = "round";
+    upperPts.forEach((p) => {
+      const dx = p.x - cx, dy = p.y - cy;
+      const len = Math.hypot(dx, dy) || 1;
+      const lashLen = eh * 0.55;
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + dx / len * lashLen, p.y + dy / len * lashLen);
+      ctx.stroke();
+    });
     ctx.restore();
   };
 
-  drawEye(LEFT_EYE);
-  drawEye(RIGHT_EYE);
+  drawEye(LEFT_EYE, LEFT_EYE_UPPER);
+  drawEye(RIGHT_EYE, RIGHT_EYE_UPPER);
 
-  // ── 6. NOSE ────────────────────────────────────────────────────
-  const nTop = pt(6);
-  const tip  = pt(4);
-  const nL   = pt(239);
-  const nR   = pt(459);
-  const nW   = Math.abs(nR.x - nL.x);
+  // ════════════════════════════════════════════════════════════════
+  //  LAYER 5 — NOSE (subtle, modern)
+  // ════════════════════════════════════════════════════════════════
+  const nBridge = pt(6);
+  const nTip    = pt(4);
+  const nL      = pt(239);
+  const nR      = pt(459);
+  const nW      = Math.abs(nR.x - nL.x);
 
   ctx.save();
-  ctx.strokeStyle = skin.shadow;
-  ctx.lineCap     = "round";
+  ctx.lineCap = "round";
 
-  // Nose bridge shadow lines (subtle)
-  ctx.globalAlpha = 0.28;
-  ctx.lineWidth   = Math.max(nW * 0.06, 1);
+  // Bridge shadow lines (very subtle)
+  ctx.globalAlpha = 0.22;
+  ctx.strokeStyle = skin.deep;
+  ctx.lineWidth   = Math.max(nW * 0.055, 1);
   ctx.beginPath();
-  ctx.moveTo(nTop.x - nW * 0.10, nTop.y);
-  ctx.quadraticCurveTo(tip.x - nW * 0.22, tip.y - nW * 0.18, tip.x - nW * 0.12, tip.y - nW * 0.04);
+  ctx.moveTo(nBridge.x - nW * 0.08, nBridge.y);
+  ctx.quadraticCurveTo(nTip.x - nW * 0.20, nTip.y - nW * 0.14, nTip.x - nW * 0.10, nTip.y);
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(nTop.x + nW * 0.10, nTop.y);
-  ctx.quadraticCurveTo(tip.x + nW * 0.22, tip.y - nW * 0.18, tip.x + nW * 0.12, tip.y - nW * 0.04);
+  ctx.moveTo(nBridge.x + nW * 0.08, nBridge.y);
+  ctx.quadraticCurveTo(nTip.x + nW * 0.20, nTip.y - nW * 0.14, nTip.x + nW * 0.10, nTip.y);
   ctx.stroke();
+
+  // Alar shadows (nostrils)
+  ctx.globalAlpha = 0.38;
+  ctx.fillStyle   = skin.deep;
+  ctx.beginPath(); ctx.ellipse(nL.x - nW * 0.02, nL.y + nW * 0.05, nW * 0.16, nW * 0.11, -0.3, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(nR.x + nW * 0.02, nR.y + nW * 0.05, nW * 0.16, nW * 0.11,  0.3, 0, Math.PI * 2); ctx.fill();
 
   // Nose tip highlight
-  ctx.globalAlpha = 0.22;
-  ctx.fillStyle   = skin.highlight;
-  ctx.beginPath();
-  ctx.ellipse(tip.x, tip.y - nW * 0.06, nW * 0.12, nW * 0.09, 0, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.globalAlpha = 0.26;
+  ctx.fillStyle   = skin.hi;
+  ctx.beginPath(); ctx.ellipse(nTip.x, nTip.y - nW * 0.04, nW * 0.11, nW * 0.08, 0, 0, Math.PI * 2); ctx.fill();
 
-  // Nostrils
-  ctx.globalAlpha = 0.48;
-  ctx.fillStyle   = skin.shadow;
-  ctx.beginPath();
-  ctx.ellipse(nL.x - nW * 0.02, nL.y + nW * 0.06, nW * 0.17, nW * 0.12, -0.3, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.ellipse(nR.x + nW * 0.02, nR.y + nW * 0.06, nW * 0.17, nW * 0.12, 0.3, 0, Math.PI * 2);
-  ctx.fill();
   ctx.restore();
 
-  // ── 7. LIPS ────────────────────────────────────────────────────
-  // Outer lip fill
+  // ════════════════════════════════════════════════════════════════
+  //  LAYER 6 — LIPS (modern glossy)
+  // ════════════════════════════════════════════════════════════════
+  // Base fill
   path(LIPS_OUT);
   ctx.fillStyle = lip.fill;
   ctx.fill();
 
-  // Inner mouth (open-mouth dark area)
+  // Inner mouth
   path(LIPS_IN);
-  ctx.fillStyle = "rgba(30,10,10,0.70)";
+  ctx.fillStyle = "rgba(20,8,8,0.72)";
   ctx.fill();
 
-  // Upper lip Cupid's bow highlight
+  // Upper lip gradient (darker at seam, lighter toward center)
+  const lCornerL = pt(61);
+  const lCornerR = pt(291);
+  const lipMidX  = (lCornerL.x + lCornerR.x) / 2;
+  const lipTopY  = pt(0).y;
+  const lipBotY  = pt(17).y;
+
   ctx.save();
-  const lhg = ctx.createLinearGradient(pt(0).x, pt(37).y, pt(0).x, pt(17).y);
-  lhg.addColorStop(0, "rgba(255,210,195,0.38)");
-  lhg.addColorStop(0.6, "rgba(255,210,195,0)");
+  const ulg2 = ctx.createLinearGradient(lipMidX, lipTopY - 2, lipMidX, lipBotY);
+  ulg2.addColorStop(0,    lip.hi);
+  ulg2.addColorStop(0.45, "rgba(255,200,180,0)");
   path(LIPS_OUT.slice(0, 11));
-  ctx.fillStyle = lhg;
-  ctx.fill();
+  ctx.fillStyle = ulg2; ctx.fill();
   ctx.restore();
 
-  // Lower lip center highlight
+  // Lower lip gloss dome
   ctx.save();
-  const lm17 = pt(17);
-  const llg = ctx.createRadialGradient(lm17.x, lm17.y, 0, lm17.x, lm17.y, faceW * 0.08);
-  llg.addColorStop(0, "rgba(255,210,195,0.28)");
-  llg.addColorStop(1, "rgba(255,210,195,0)");
-  ctx.beginPath();
-  ctx.ellipse(lm17.x, lm17.y - faceW * 0.008, faceW * 0.07, faceW * 0.024, 0, 0, Math.PI * 2);
-  ctx.fillStyle = llg;
-  ctx.fill();
+  const lm17  = pt(17);
+  const lipW  = Math.abs(lCornerR.x - lCornerL.x);
+  const llg2  = ctx.createRadialGradient(lm17.x, lm17.y - lipW * 0.01, 0, lm17.x, lm17.y, lipW * 0.22);
+  llg2.addColorStop(0, "rgba(255,220,200,0.52)");
+  llg2.addColorStop(1, "rgba(255,220,200,0)");
+  ctx.beginPath(); ctx.ellipse(lm17.x, lm17.y - lipW * 0.01, lipW * 0.22, lipW * 0.055, 0, 0, Math.PI * 2);
+  ctx.fillStyle = llg2; ctx.fill();
   ctx.restore();
 
-  // Lip outline
+  // Lip outline — thin dark seam
   path(LIPS_OUT);
-  ctx.strokeStyle = lip.shadow;
+  ctx.strokeStyle = lip.mid;
   ctx.lineWidth   = 0.7;
   ctx.stroke();
+
+  // ════════════════════════════════════════════════════════════════
+  //  LAYER 7 — FINISHING TOUCHES
+  // ════════════════════════════════════════════════════════════════
+
+  // Subtle center-face highlight (nose bridge, philtrum, chin)
+  const ctrG = ctx.createLinearGradient(top.x, pt(6).y, top.x, chin.y);
+  ctrG.addColorStop(0,    "rgba(255,248,235,0.12)");
+  ctrG.addColorStop(0.4,  "rgba(255,248,235,0.06)");
+  ctrG.addColorStop(1,    "rgba(255,248,235,0.08)");
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(top.x, (top.y + chin.y) * 0.5, faceW * 0.16, faceH * 0.52, 0, 0, Math.PI * 2);
+  ctx.fillStyle = ctrG; ctx.fill();
+  ctx.restore();
+
+  // Under-eye shadow (natural aging / depth)
+  [pt(110), pt(339)].forEach(c => {
+    const ucg = ctx.createRadialGradient(c.x, c.y + faceW * 0.01, 0, c.x, c.y + faceW * 0.01, faceW * 0.07);
+    ucg.addColorStop(0, "rgba(80,40,20,0.12)");
+    ucg.addColorStop(1, "rgba(80,40,20,0)");
+    ctx.beginPath(); ctx.arc(c.x, c.y + faceW * 0.01, faceW * 0.07, 0, Math.PI * 2);
+    ctx.fillStyle = ucg; ctx.fill();
+  });
 }
 
-// ─── Main Studio component ─────────────────────────────────────────────────────
+// ─── Color utility helpers ────────────────────────────────────────────────────
+function lighten(hex: string, amt: number): string {
+  const r = Math.min(255, parseInt(hex.slice(1,3), 16) + amt);
+  const g = Math.min(255, parseInt(hex.slice(3,5), 16) + amt);
+  const b = Math.min(255, parseInt(hex.slice(5,7), 16) + amt);
+  return `rgb(${r},${g},${b})`;
+}
+function darken(hex: string, amt: number): string {
+  const r = Math.max(0, parseInt(hex.slice(1,3), 16) - amt);
+  const g = Math.max(0, parseInt(hex.slice(3,5), 16) - amt);
+  const b = Math.max(0, parseInt(hex.slice(5,7), 16) - amt);
+  return `rgb(${r},${g},${b})`;
+}
+
+// ─── Studio component ─────────────────────────────────────────────────────────
 export default function Studio() {
   const { data: activeAvatar } = useGetActiveAvatar();
-  const { data: config } = useGetConfig();
+  const { data: config }       = useGetConfig();
 
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [faceDetected, setFaceDetected] = useState(false);
-  const [fps, setFps] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
-  const [audioLevel, setAudioLevel] = useState(0);
-  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const [isStreaming,   setIsStreaming]   = useState(false);
+  const [faceDetected,  setFaceDetected]  = useState(false);
+  const [fps,           setFps]           = useState(0);
+  const [elapsed,       setElapsed]       = useState(0);
+  const [audioLevel,    setAudioLevel]    = useState(0);
+  const [videoEl,       setVideoEl]       = useState<HTMLVideoElement | null>(null);
 
-  const streamRef       = useRef<MediaStream | null>(null);
-  const sourceCanvasRef = useRef<HTMLCanvasElement>(null);
-  const outputCanvasRef = useRef<HTMLCanvasElement>(null);
-  const outputVideoRef  = useRef<HTMLVideoElement>(null);
+  const streamRef        = useRef<MediaStream | null>(null);
+  const sourceCanvasRef  = useRef<HTMLCanvasElement>(null);
+  const outputCanvasRef  = useRef<HTMLCanvasElement>(null);
+  const outputVideoRef   = useRef<HTMLVideoElement>(null);
   const mediapipeInitRef = useRef(false);
-  const avatarRef = useRef(activeAvatar);
+  const avatarRef        = useRef(activeAvatar);
   useEffect(() => { avatarRef.current = activeAvatar; }, [activeAvatar]);
 
-  // Bind the output video element to the stream when permission is granted
+  // Wire output video to stream
   useEffect(() => {
     if (hasPermission && streamRef.current && outputVideoRef.current) {
       outputVideoRef.current.srcObject = streamRef.current;
@@ -402,21 +484,16 @@ export default function Studio() {
     }
   }, [hasPermission]);
 
-  // Keep canvas pixel dimensions in sync with CSS layout (DPR-aware)
+  // Keep canvas pixel sizes in sync with CSS layout (CSS pixels, no DPR scaling to avoid offset bugs)
   useEffect(() => {
     if (hasPermission !== true) return;
-
-    const syncCanvas = (el: HTMLCanvasElement | null) => {
+    const sync = (el: HTMLCanvasElement | null) => {
       if (!el) return () => {};
       const resize = () => {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return;
-        const dpr = window.devicePixelRatio || 1;
-        const newW = Math.round(rect.width  * dpr);
-        const newH = Math.round(rect.height * dpr);
-        if (el.width !== newW || el.height !== newH) {
-          el.width  = newW;
-          el.height = newH;
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && (el.width !== Math.round(r.width) || el.height !== Math.round(r.height))) {
+          el.width  = Math.round(r.width);
+          el.height = Math.round(r.height);
         }
       };
       const ro = new ResizeObserver(resize);
@@ -424,32 +501,29 @@ export default function Studio() {
       requestAnimationFrame(resize);
       return () => ro.disconnect();
     };
-
-    const c1 = syncCanvas(sourceCanvasRef.current);
-    const c2 = syncCanvas(outputCanvasRef.current);
+    const c1 = sync(sourceCanvasRef.current);
+    const c2 = sync(outputCanvasRef.current);
     return () => { c1(); c2(); };
   }, [hasPermission]);
 
   const requestPermissions = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      streamRef.current = stream;
+      const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      streamRef.current = s;
       setHasPermission(true);
-    } catch {
-      setHasPermission(false);
-    }
+    } catch { setHasPermission(false); }
   };
 
-  const initAudioAnalysis = useCallback((stream: MediaStream) => {
+  const initAudio = useCallback((stream: MediaStream) => {
     const ctx = new AudioContext();
-    const analyser = ctx.createAnalyser();
-    ctx.createMediaStreamSource(stream).connect(analyser);
-    analyser.fftSize = 256;
-    const buf = new Uint8Array(analyser.frequencyBinCount);
+    const an  = ctx.createAnalyser();
+    ctx.createMediaStreamSource(stream).connect(an);
+    an.fftSize = 256;
+    const buf = new Uint8Array(an.frequencyBinCount);
     let active = true;
     const tick = () => {
       if (!active) return;
-      analyser.getByteFrequencyData(buf);
+      an.getByteFrequencyData(buf);
       setAudioLevel(buf.reduce((a, b) => a + b, 0) / buf.length / 255);
       requestAnimationFrame(tick);
     };
@@ -463,81 +537,61 @@ export default function Studio() {
     video.srcObject = stream;
     video.play().catch(() => {});
 
-    const faceMesh = new FaceMesh({
-      locateFile: (file) =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${file}`,
+    const fm = new FaceMesh({
+      locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`,
     });
-    faceMesh.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: false,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
+    fm.setOptions({ maxNumFaces: 1, refineLandmarks: false, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
 
-    faceMesh.onResults((results) => {
-      const detected = !!(results.multiFaceLandmarks?.length);
+    fm.onResults((res) => {
+      const detected = !!(res.multiFaceLandmarks?.length);
       setFaceDetected(detected);
 
-      // ── Source panel: cyan landmark dots (no mirroring, video is raw) ──
+      // Source panel — cyan dots (no mirror)
       const sc   = sourceCanvasRef.current;
       const sCtx = sc?.getContext("2d");
       if (sCtx && sc) {
         sCtx.clearRect(0, 0, sc.width, sc.height);
         if (detected) {
-          sCtx.fillStyle = "rgba(0,255,200,0.72)";
-          for (const p of results.multiFaceLandmarks[0]) {
-            // Apply same object-cover transform so dots sit on the face in the video
+          sCtx.fillStyle = "rgba(0,255,190,0.72)";
+          for (const p of res.multiFaceLandmarks[0]) {
             const { x, y } = lmToCanvas(p.x, p.y, sc.width, sc.height, false);
-            sCtx.beginPath();
-            sCtx.arc(x, y, 1.5, 0, Math.PI * 2);
-            sCtx.fill();
+            sCtx.beginPath(); sCtx.arc(x, y, 1.4, 0, Math.PI * 2); sCtx.fill();
           }
         }
       }
 
-      // ── Output panel: realistic face (mirrored to match scaleX(-1) video) ──
+      // Output panel — modern face (mirrored to match video)
       const oc   = outputCanvasRef.current;
       const oCtx = oc?.getContext("2d");
       if (oCtx && oc) {
         oCtx.clearRect(0, 0, oc.width, oc.height);
         if (detected) {
           const av = avatarRef.current;
-          drawFace(
-            oCtx,
-            results.multiFaceLandmarks[0] as LM[],
-            oc.width, oc.height,
-            av?.skinTone, av?.hairColor, av?.eyeColor,
-            true,
-          );
+          drawModernFace(oCtx, res.multiFaceLandmarks[0] as LM[], oc.width, oc.height,
+            av?.skinTone, av?.hairColor, av?.eyeColor, true);
         }
       }
     });
 
     const cam = new Camera(video, {
-      onFrame: async () => {
-        if (video.readyState >= 2) await faceMesh.send({ image: video });
-      },
-      width: VID_W,
-      height: VID_H,
+      onFrame: async () => { if (video.readyState >= 2) await fm.send({ image: video }); },
+      width: VID_W, height: VID_H,
     });
     cam.start();
   }, []);
 
   useEffect(() => {
     if (hasPermission !== true || !streamRef.current || !videoEl) return;
-    const stream = streamRef.current;
-    const cleanup = initAudioAnalysis(stream);
-    const t = setTimeout(() => initMediaPipe(stream, videoEl), 120);
+    const stream  = streamRef.current;
+    const cleanup = initAudio(stream);
+    const t       = setTimeout(() => initMediaPipe(stream, videoEl), 120);
     return () => { clearTimeout(t); cleanup?.(); };
-  }, [hasPermission, videoEl, initAudioAnalysis, initMediaPipe]);
+  }, [hasPermission, videoEl, initAudio, initMediaPipe]);
 
   useEffect(() => {
     let iv: ReturnType<typeof setInterval>;
     if (isStreaming) {
-      iv = setInterval(() => {
-        setElapsed(e => e + 1);
-        setFps(Math.floor(Math.random() * 5 + 55));
-      }, 1000);
+      iv = setInterval(() => { setElapsed(e => e + 1); setFps(Math.floor(Math.random() * 5 + 55)); }, 1000);
     } else { setElapsed(0); setFps(0); }
     return () => clearInterval(iv);
   }, [isStreaming]);
@@ -545,7 +599,7 @@ export default function Studio() {
   const fmt = (s: number) =>
     `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
 
-  // ── Permission screens ─────────────────────────────────────────
+  // ── Permission screens ────────────────────────────────────────────────────────
   if (hasPermission === false) {
     return (
       <Layout>
@@ -554,9 +608,7 @@ export default function Studio() {
             <Video className="w-12 h-12 text-destructive mx-auto" />
             <h2 className="text-xl font-bold text-destructive">Accès caméra refusé</h2>
             <p className="text-muted-foreground">Autorisez la caméra et le micro dans votre navigateur.</p>
-            <Button onClick={() => { mediapipeInitRef.current = false; requestPermissions(); }} className="w-full">
-              Réessayer
-            </Button>
+            <Button onClick={() => { mediapipeInitRef.current = false; requestPermissions(); }} className="w-full">Réessayer</Button>
           </div>
         </div>
       </Layout>
@@ -571,19 +623,15 @@ export default function Studio() {
             <div className="absolute inset-0 bg-primary/5 pointer-events-none" />
             <Video className="w-16 h-16 text-primary mx-auto mb-4" />
             <h2 className="text-2xl font-bold font-mono tracking-tight">Studio Setup</h2>
-            <p className="text-muted-foreground text-sm">
-              Accès caméra + micro requis pour le tracking facial en temps réel.
-            </p>
-            <Button onClick={requestPermissions} size="lg" className="w-full font-bold uppercase tracking-wider">
-              Grant Access
-            </Button>
+            <p className="text-muted-foreground text-sm">Accès caméra + micro requis pour le tracking facial en temps réel.</p>
+            <Button onClick={requestPermissions} size="lg" className="w-full font-bold uppercase tracking-wider">Grant Access</Button>
           </div>
         </div>
       </Layout>
     );
   }
 
-  // ── Main studio view ───────────────────────────────────────────
+  // ── Main studio ───────────────────────────────────────────────────────────────
   return (
     <Layout>
       <div className="flex flex-col h-full bg-background p-4 gap-4">
@@ -592,8 +640,7 @@ export default function Studio() {
         <div className="flex items-center justify-between bg-card border border-border p-3 rounded-lg shrink-0">
           <div className="flex items-center gap-4">
             <Badge variant="outline" className="font-mono text-xs uppercase bg-black/40 border-primary/30 text-primary">
-              <Zap className="w-3 h-3 mr-1 inline" />
-              {activeAvatar?.name ?? "No Avatar"}
+              <Zap className="w-3 h-3 mr-1 inline" />{activeAvatar?.name ?? "No Avatar"}
             </Badge>
             <Badge variant="outline" className={`font-mono text-xs uppercase border transition-colors ${faceDetected ? "border-primary/40 text-primary bg-primary/10" : "border-border text-muted-foreground"}`}>
               <span className={`inline-block w-2 h-2 rounded-full mr-2 ${faceDetected ? "bg-primary animate-pulse" : "bg-muted-foreground"}`} />
@@ -607,22 +654,17 @@ export default function Studio() {
             <span className={`font-mono text-xs flex items-center gap-1 ${isStreaming ? "text-primary font-bold" : "text-muted-foreground"}`}>
               <Clock className="w-4 h-4" />{fmt(elapsed)}
             </span>
-            {isStreaming ? (
-              <Button variant="destructive" size="sm" onClick={() => setIsStreaming(false)} className="animate-pulse">
-                <Square className="w-4 h-4 mr-2 fill-current" /> STOP
-              </Button>
-            ) : (
-              <Button size="sm" onClick={() => setIsStreaming(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white">
-                <Play className="w-4 h-4 mr-2 fill-current" /> GO LIVE
-              </Button>
-            )}
+            {isStreaming
+              ? <Button variant="destructive" size="sm" onClick={() => setIsStreaming(false)} className="animate-pulse"><Square className="w-4 h-4 mr-2 fill-current" /> STOP</Button>
+              : <Button size="sm" onClick={() => setIsStreaming(true)} className="bg-emerald-600 hover:bg-emerald-500 text-white"><Play className="w-4 h-4 mr-2 fill-current" /> GO LIVE</Button>
+            }
           </div>
         </div>
 
         {/* Panels */}
         <div className="flex-1 flex gap-4 min-h-0">
 
-          {/* LEFT: source webcam + landmark dots */}
+          {/* LEFT — source + landmarks */}
           <div className="w-[38%] flex flex-col gap-3 min-h-0">
             <div className="flex-1 relative bg-black rounded-lg overflow-hidden border border-border min-h-0">
               <video
@@ -630,13 +672,8 @@ export default function Studio() {
                 autoPlay playsInline muted
                 className="absolute inset-0 w-full h-full object-cover opacity-50"
               />
-              <canvas
-                ref={sourceCanvasRef}
-                className="absolute inset-0 w-full h-full"
-              />
-              <div className="absolute top-3 left-3 font-mono text-xs text-primary/70 bg-black/60 px-2 py-1 rounded">
-                SOURCE
-              </div>
+              <canvas ref={sourceCanvasRef} className="absolute inset-0 w-full h-full" />
+              <div className="absolute top-3 left-3 font-mono text-xs text-primary/70 bg-black/60 px-2 py-1 rounded">SOURCE</div>
             </div>
 
             <Card className="bg-card border-border p-4 flex items-center justify-between gap-4 shrink-0">
@@ -661,20 +698,15 @@ export default function Studio() {
             </Card>
           </div>
 
-          {/* RIGHT: realistic face avatar output */}
+          {/* RIGHT — modern face avatar */}
           <div className="flex-1 relative rounded-lg overflow-hidden border border-border bg-black min-h-0">
-            {/* Mirrored webcam background */}
             <video
               ref={outputVideoRef}
               autoPlay playsInline muted
               className="absolute inset-0 w-full h-full object-cover"
               style={{ transform: "scaleX(-1)" }}
             />
-            {/* Realistic face canvas (no CSS transform — drawn with mirrored coords) */}
-            <canvas
-              ref={outputCanvasRef}
-              className="absolute inset-0 w-full h-full"
-            />
+            <canvas ref={outputCanvasRef} className="absolute inset-0 w-full h-full" />
 
             <div className="absolute top-3 right-3 font-mono text-xs text-emerald-400 bg-black/60 px-2 py-1 rounded flex items-center gap-2 pointer-events-none">
               <span className={`w-2 h-2 rounded-full ${isStreaming ? "bg-red-500 animate-pulse" : "bg-border"}`} />
@@ -683,7 +715,6 @@ export default function Studio() {
             <div className="absolute bottom-3 left-3 font-mono text-xs text-white/50 bg-black/40 px-2 py-1 rounded pointer-events-none">
               AVATAR: {activeAvatar?.name?.toUpperCase() ?? "NONE"}
             </div>
-
             {!faceDetected && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <p className="font-mono text-xs text-white/20 uppercase tracking-widest animate-pulse">
