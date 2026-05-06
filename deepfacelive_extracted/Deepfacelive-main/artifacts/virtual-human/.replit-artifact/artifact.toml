@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Virtual Human Live Avatar"
+version = "1.0.0"
+id = "artifacts/virtual-human"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 26185
+
+[services.development]
+run = "pnpm --filter @workspace/virtual-human run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/virtual-human", "run", "build" ]
+publicDir = "artifacts/virtual-human/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "26185"
+BASE_PATH = "/"

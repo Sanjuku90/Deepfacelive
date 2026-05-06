@@ -1,0 +1,367 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: Virtual Human Live Avatar API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: avatars
+    description: Avatar profile management
+  - name: config
+    description: Avatar rendering configuration
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /avatars:
+    get:
+      operationId: listAvatars
+      tags: [avatars]
+      summary: List all avatar profiles
+      responses:
+        "200":
+          description: List of avatar profiles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AvatarProfile"
+    post:
+      operationId: createAvatar
+      tags: [avatars]
+      summary: Create a new avatar profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAvatarBody"
+      responses:
+        "201":
+          description: Created avatar profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvatarProfile"
+        "400":
+          description: Invalid request
+
+  /avatars/{id}:
+    get:
+      operationId: getAvatar
+      tags: [avatars]
+      summary: Get a single avatar profile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Avatar profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvatarProfile"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateAvatar
+      tags: [avatars]
+      summary: Update avatar profile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAvatarBody"
+      responses:
+        "200":
+          description: Updated avatar profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvatarProfile"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteAvatar
+      tags: [avatars]
+      summary: Delete an avatar profile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /avatars/{id}/activate:
+    post:
+      operationId: activateAvatar
+      tags: [avatars]
+      summary: Set this avatar as the active one
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Activated avatar
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvatarProfile"
+        "404":
+          description: Not found
+
+  /avatars/active:
+    get:
+      operationId: getActiveAvatar
+      tags: [avatars]
+      summary: Get the currently active avatar
+      responses:
+        "200":
+          description: Active avatar profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvatarProfile"
+        "404":
+          description: No active avatar
+
+  /config:
+    get:
+      operationId: getConfig
+      tags: [config]
+      summary: Get current avatar rendering configuration
+      responses:
+        "200":
+          description: Configuration object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvatarConfig"
+    put:
+      operationId: updateConfig
+      tags: [config]
+      summary: Update avatar rendering configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateConfigBody"
+      responses:
+        "200":
+          description: Updated configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvatarConfig"
+
+  /stats:
+    get:
+      operationId: getStats
+      tags: [avatars]
+      summary: Get session statistics and summary
+      responses:
+        "200":
+          description: Stats summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStats"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    AvatarProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: ["string", "null"]
+        imageUrl:
+          type: ["string", "null"]
+        thumbnailUrl:
+          type: ["string", "null"]
+        isActive:
+          type: boolean
+        skinTone:
+          type: string
+        hairColor:
+          type: string
+        eyeColor:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - name
+        - isActive
+        - skinTone
+        - hairColor
+        - eyeColor
+        - createdAt
+        - updatedAt
+
+    CreateAvatarBody:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: ["string", "null"]
+        imageUrl:
+          type: ["string", "null"]
+        thumbnailUrl:
+          type: ["string", "null"]
+        skinTone:
+          type: string
+        hairColor:
+          type: string
+        eyeColor:
+          type: string
+      required:
+        - name
+        - skinTone
+        - hairColor
+        - eyeColor
+
+    UpdateAvatarBody:
+      type: object
+      properties:
+        name:
+          type: ["string", "null"]
+        description:
+          type: ["string", "null"]
+        imageUrl:
+          type: ["string", "null"]
+        thumbnailUrl:
+          type: ["string", "null"]
+        skinTone:
+          type: ["string", "null"]
+        hairColor:
+          type: ["string", "null"]
+        eyeColor:
+          type: ["string", "null"]
+
+    AvatarConfig:
+      type: object
+      properties:
+        id:
+          type: integer
+        renderQuality:
+          type: string
+        enableLipSync:
+          type: boolean
+        enableVoiceModulation:
+          type: boolean
+        voicePitchShift:
+          type: number
+        enablePoseTracking:
+          type: boolean
+        smoothingFactor:
+          type: number
+        backgroundBlur:
+          type: boolean
+        backgroundReplacement:
+          type: ["string", "null"]
+        updatedAt:
+          type: string
+      required:
+        - id
+        - renderQuality
+        - enableLipSync
+        - enableVoiceModulation
+        - voicePitchShift
+        - enablePoseTracking
+        - smoothingFactor
+        - backgroundBlur
+        - updatedAt
+
+    UpdateConfigBody:
+      type: object
+      properties:
+        renderQuality:
+          type: ["string", "null"]
+        enableLipSync:
+          type: ["boolean", "null"]
+        enableVoiceModulation:
+          type: ["boolean", "null"]
+        voicePitchShift:
+          type: ["number", "null"]
+        enablePoseTracking:
+          type: ["boolean", "null"]
+        smoothingFactor:
+          type: ["number", "null"]
+        backgroundBlur:
+          type: ["boolean", "null"]
+        backgroundReplacement:
+          type: ["string", "null"]
+
+    SessionStats:
+      type: object
+      properties:
+        totalAvatars:
+          type: integer
+        activeAvatar:
+          type: ["string", "null"]
+        sessionsToday:
+          type: integer
+        avgFrameRate:
+          type: number
+        lipSyncEnabled:
+          type: boolean
+        voiceModEnabled:
+          type: boolean
+        renderQuality:
+          type: string
+      required:
+        - totalAvatars
+        - sessionsToday
+        - avgFrameRate
+        - lipSyncEnabled
+        - voiceModEnabled
+        - renderQuality
