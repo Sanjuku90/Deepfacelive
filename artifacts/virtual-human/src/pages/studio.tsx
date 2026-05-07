@@ -82,13 +82,11 @@ function drawVideoFrame(
   const cropX  = (drawW - cW) / 2;
   const cropY  = (drawH - cH) / 2;
 
-  // Mirror horizontally
+  // Mirror horizontally — IMPORTANT: use -cropX (same as non-mirrored) so landmark coords stay aligned
   ctx.save();
   ctx.translate(cW, 0);
   ctx.scale(-1, 1);
-  // After this transform: drawing at ctx_x=0 appears at screen right, ctx_x=cW at screen left
-  // To show the same object-cover crop, we shift right by cropX so the crop is symmetric
-  ctx.drawImage(video, cropX, -cropY, drawW, drawH);
+  ctx.drawImage(video, -cropX, -cropY, drawW, drawH);
   ctx.restore();
 }
 
@@ -107,14 +105,11 @@ function applyAvatarEffects(
   };
 
   const skinTint = getSkinTint(skinTone);
-  const hairTint = getHairColor(hairCol);
   const eyeTint  = getEyeColor(eyeCol);
 
   const topPt  = pt(10);
-  const foreLPt = pt(109);
-  const foreRPt = pt(338);
+  const chinPt = pt(152);
   const faceW  = Math.abs(pt(356).x - pt(127).x);
-  const hairBotY = Math.max(foreLPt.y, foreRPt.y) + faceW * 0.04;
 
   // ── 1. SKIN TONE TINT (subtle wash over face oval) ────────────────────────
   ctx.save();
@@ -125,21 +120,19 @@ function applyAvatarEffects(
   ctx.fillRect(0, 0, cW, cH);
   ctx.restore();
 
-  // ── 2. HAIR TINT (source-over, safe for any hair color) ──────────────────
+  // ── 2. FACE OVAL GLOW OUTLINE (avatar aesthetic border) ──────────────────
   ctx.save();
-  // Clip to top-of-canvas strip, excluding the face oval via evenodd
-  ctx.beginPath();
-  ctx.rect(0, 0, cW, hairBotY);
-  FACE_OVAL.forEach((id, j) => {
-    const p = pt(id); j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-  });
-  ctx.closePath();
-  ctx.clip("evenodd");
-  // Use source-over so any color works without blackening the video
-  ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = 0.38;
-  ctx.fillStyle   = hairTint;
-  ctx.fillRect(0, 0, cW, cH);
+  makePath(FACE_OVAL);
+  ctx.strokeStyle = eyeTint;
+  ctx.lineWidth   = 2.5;
+  ctx.shadowBlur  = 14;
+  ctx.shadowColor = eyeTint;
+  ctx.globalAlpha = 0.72;
+  ctx.stroke();
+  // Second wider pass for glow depth
+  ctx.lineWidth   = 5;
+  ctx.globalAlpha = 0.22;
+  ctx.stroke();
   ctx.restore();
 
   // ── 3. EYE COLOR (tint iris, darken pupil) ────────────────────────────────
