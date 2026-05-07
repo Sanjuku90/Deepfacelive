@@ -120,33 +120,24 @@ function applyAvatarEffects(
   ctx.save();
   makePath(FACE_OVAL);
   ctx.clip();
-  ctx.globalAlpha = 0.20;
+  ctx.globalAlpha = 0.18;
   ctx.fillStyle   = skinTint;
-  ctx.fill();
-  // Contour: darken edges of face to give structure
-  ctx.globalAlpha = 0.12;
-  ctx.globalCompositeOperation = "multiply";
-  const edgeG = ctx.createRadialGradient(
-    (foreLPt.x + foreRPt.x) / 2, (topPt.y + pt(152).y) / 2, faceW * 0.18,
-    (foreLPt.x + foreRPt.x) / 2, (topPt.y + pt(152).y) / 2, faceW * 0.62,
-  );
-  edgeG.addColorStop(0,  "rgba(0,0,0,0)");
-  edgeG.addColorStop(1,  "rgba(0,0,0,1)");
   ctx.fillRect(0, 0, cW, cH);
   ctx.restore();
 
-  // ── 2. HAIR TINT (multiply over hair region, exclude face oval) ───────────
+  // ── 2. HAIR TINT (source-over, safe for any hair color) ──────────────────
   ctx.save();
-  // Path = top strip MINUS face oval (evenodd creates a hole)
+  // Clip to top-of-canvas strip, excluding the face oval via evenodd
   ctx.beginPath();
-  ctx.rect(0, 0, cW, hairBotY);                          // hair bounding box
+  ctx.rect(0, 0, cW, hairBotY);
   FACE_OVAL.forEach((id, j) => {
     const p = pt(id); j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
   });
   ctx.closePath();
   ctx.clip("evenodd");
-  ctx.globalCompositeOperation = "multiply";
-  ctx.globalAlpha = 0.70;
+  // Use source-over so any color works without blackening the video
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 0.38;
   ctx.fillStyle   = hairTint;
   ctx.fillRect(0, 0, cW, cH);
   ctx.restore();
@@ -159,8 +150,9 @@ function applyAvatarEffects(
     const minY = Math.min(...ys), maxY = Math.max(...ys);
     const cx   = (minX + maxX) / 2;
     const cy   = (minY + maxY) / 2;
+    const ew   = maxX - minX;
     const eh   = maxY - minY;
-    const irisR = Math.max(eh * 0.52, 3);
+    const irisR = Math.max(ew * 0.24, eh * 0.58, 4);
 
     ctx.save();
     makePath(eyeIds);
