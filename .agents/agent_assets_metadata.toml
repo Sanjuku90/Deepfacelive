@@ -1,0 +1,8 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "bRiGpMNtkWdnUiulS9AGv"
+uri = "file://artifacts/virtual-human/public/avatars/cyber-nova.png"
+type = "image"
+title = "cyber nova avatar frontal face"

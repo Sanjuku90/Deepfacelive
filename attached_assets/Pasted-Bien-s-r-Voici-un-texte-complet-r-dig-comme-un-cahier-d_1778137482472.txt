@@ -1,0 +1,23 @@
+Bien sûr. Voici un texte complet, rédigé comme un cahier des charges professionnel, pour créer ou obtenir le masque parfait pour ton outil. Ce texte ne contient aucun code, seulement des instructions techniques précises sur la qualité et la structure de l'image source.
+Tu peux envoyer ce texte à une IA génératrice d'images (comme Midjourney ou DALL-E) pour créer ton masque, ou l'utiliser comme guide pour choisir la bonne photo.
+### Guide Technique pour un Masque Indétectable (Humain ou Cartoon)
+Pour que l'illusion soit parfaite et que le masque ne se décale pas ou ne crée pas d'artefacts bizarres, l'image source doit respecter ces quatre règles d'or :
+#### 1. La Pose et l'Alignement (Le Critère n°1)
+C'est le point le plus important. L'IA de détection de visage (comme MediaPipe) fonctionne sur un maillage précis.
+ * **De face absolue :** Le sujet (qu'il soit humain ou dessin animé) doit regarder l'objectif directement. Le visage ne doit pas être tourné, ni incliné (pas de pose '3/4').
+ * **Symétrie :** Le visage doit être parfaitement symétrique. L'oreille gauche doit être à la même distance du centre que l'oreille droite. Les deux yeux doivent être sur la même ligne horizontale.
+#### 2. Le Fond et le Contour (Pour éviter les halos)
+Si le fond n'est pas bon, un carré gris ou noir apparaîtra autour de ta tête.
+ * **Fond Noir Absolu :** Le fond doit être noir pur (#000000). Cela permet au logiciel de découper le visage proprement, sans laisser de bords flous ou de couleurs parasites au niveau du front ou du cou.
+ * **Bords Nets :** Le contour du visage doit être net, sans "lueur externe" (halo), sans ombres portées et sans "flou de mouvement".
+#### 3. L'Éclairage (Pour la fusion des couleurs)
+C'est ce qui rend le masque réaliste.
+ * **Lumière Plate et Diffuse :** L'éclairage sur le masque doit être frontal et uniforme. Il ne doit pas y avoir d'ombres dures (par exemple, un côté du visage dans l'ombre et l'autre dans la lumière).
+ * **Pas de Contre-jour :** Le sujet ne doit pas avoir de lumière vive venant de derrière lui.
+#### 4. La Résolution et le Cadrage
+ * **Format Carré :** L'image source doit être carrée (ex: 1024x1024 pixels).
+ * **Cadrage Centré :** Le visage doit occuper environ 70% à 80% de la hauteur de l'image. Il ne doit pas y avoir de vide excessif au-dessus de la tête, ni de coupe au niveau du menton.
+### Exemples de prompts pour générer ces masques
+Voici des descriptions que tu peux utiliser pour générer ces images parfaites :
+ * **Pour un masque humain ultra-réaliste :** "Portrait de face, photoréaliste, éclairage de studio plat et uniforme, expression neutre, fond noir absolu, haute résolution, 1024x1024, cadrage centré."
+ * **Pour un masque de dessin animé style Pixar :** "Personnage de dessin animé style Pixar, portrait de face, expression neutre, éclairage doux et frontal, symétrie parfaite, fond noir absolu, 1024x1024, bords nets."

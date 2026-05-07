@@ -10,20 +10,98 @@ import { Play, Square, Video, Mic, Activity, Clock, Zap } from "lucide-react";
 import { FaceMesh } from "@mediapipe/face_mesh";
 import { Camera } from "@mediapipe/camera_utils";
 
-// ─── Landmark index groups ────────────────────────────────────────────────────
-const FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
-const LEFT_EYE  = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
-const RIGHT_EYE = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
-
-const VID_W = 640;
-const VID_H = 480;
-
-// ─── EMA landmark smoothing (reduces jitter / trembling) ─────────────────────
-// alpha=1 means no smoothing; alpha=0.45 gives fluid tracking without lag
-const EMA_ALPHA = 0.50;
+// ─── Constants ────────────────────────────────────────────────────────────────
+const VID_W = 640, VID_H = 480;
+const IMG_SZ = 1024; // avatar image size (square)
+const EMA_ALPHA = 0.48; // EMA smoothing factor (lower = smoother, more latency)
 
 type LM = { x: number; y: number; z: number };
 
+// ─── Key landmark indices for mesh warping ────────────────────────────────────
+// 21 control points covering the face uniformly
+const KEY_LM = [
+  10,  // 0  forehead center
+  109, // 1  left forehead
+  338, // 2  right forehead
+  127, // 3  left jaw
+  356, // 4  right jaw
+  152, // 5  chin
+  234, // 6  left cheek
+  454, // 7  right cheek
+  33,  // 8  left eye inner
+  133, // 9  left eye outer
+  362, // 10 right eye outer
+  263, // 11 right eye inner
+  1,   // 12 nose tip
+  61,  // 13 left mouth corner
+  291, // 14 right mouth corner
+  0,   // 15 top lip center
+  17,  // 16 bottom lip center
+  103, // 17 left eyebrow
+  332, // 18 right eyebrow
+  377, // 19 left chin-side
+  400, // 20 right chin-side
+];
+
+// Canonical source positions on the 1024×1024 avatar image (normalized [0,1])
+// Derived from MediaPipe canonical frontal face model
+const CANON_SRC: [number, number][] = [
+  [0.497, 0.148], // 0  forehead center
+  [0.357, 0.202], // 1  left forehead
+  [0.643, 0.202], // 2  right forehead
+  [0.222, 0.458], // 3  left jaw
+  [0.778, 0.458], // 4  right jaw
+  [0.499, 0.822], // 5  chin
+  [0.173, 0.420], // 6  left cheek
+  [0.827, 0.420], // 7  right cheek
+  [0.312, 0.362], // 8  left eye inner
+  [0.392, 0.356], // 9  left eye outer
+  [0.608, 0.356], // 10 right eye outer
+  [0.688, 0.362], // 11 right eye inner
+  [0.499, 0.538], // 12 nose tip
+  [0.405, 0.660], // 13 left mouth corner
+  [0.595, 0.660], // 14 right mouth corner
+  [0.499, 0.631], // 15 top lip center
+  [0.499, 0.708], // 16 bottom lip center
+  [0.298, 0.288], // 17 left eyebrow
+  [0.702, 0.288], // 18 right eyebrow
+  [0.368, 0.771], // 19 left chin-side
+  [0.632, 0.771], // 20 right chin-side
+];
+
+// Triangle indices into KEY_LM / CANON_SRC
+const TRIANGLES: [number, number, number][] = [
+  // Forehead band
+  [0, 1, 2],
+  [0, 1, 17], [0, 2, 18],
+  // Brow → eye
+  [1, 17, 8], [2, 18, 11],
+  [17, 8, 9], [18, 11, 10],
+  // Inter-eye / nose bridge
+  [8, 11, 12], [8, 9, 12], [10, 11, 12],
+  // Left cheek / jaw
+  [1, 6, 3], [1, 6, 8], [6, 8, 13], [3, 6, 19],
+  // Right cheek / jaw
+  [2, 7, 4], [2, 7, 11], [7, 11, 14], [4, 7, 20],
+  // Nose → mouth
+  [9, 12, 13], [10, 12, 14],
+  [12, 13, 15], [12, 14, 15],
+  // Lip area
+  [13, 14, 15], [13, 14, 16], [13, 15, 16], [14, 15, 16],
+  // Lower face
+  [13, 19, 16], [14, 20, 16],
+  [3, 19, 13], [4, 20, 14],
+  [19, 20, 5], [19, 16, 5], [20, 16, 5],
+];
+
+// Face oval for masking
+const FACE_OVAL = [
+  10,338,297,332,284,251,389,356,454,323,361,288,
+  397,365,379,378,400,377,152,148,176,149,150,136,
+  172,58,132,93,234,127,162,21,54,103,67,109,
+];
+
+// ─── EMA landmark smoothing ───────────────────────────────────────────────────
 function emaSmooth(cur: LM[], prev: LM[]): LM[] {
   if (prev.length !== cur.length) return cur;
   return cur.map((lm, i) => ({
@@ -33,216 +111,193 @@ function emaSmooth(cur: LM[], prev: LM[]): LM[] {
   }));
 }
 
-// ─── Object-cover projection ──────────────────────────────────────────────────
-function lmToCanvas(lx: number, ly: number, cW: number, cH: number, mirrored: boolean) {
+// ─── Object-cover projection: normalized landmark → canvas pixel ──────────────
+function lmToCanvas(lx: number, ly: number, cW: number, cH: number, mirror: boolean) {
   const scale = Math.max(cW / VID_W, cH / VID_H);
   const offX  = (VID_W * scale - cW) / 2;
   const offY  = (VID_H * scale - cH) / 2;
   return {
-    x: (mirrored ? 1 - lx : lx) * VID_W * scale - offX,
+    x: (mirror ? 1 - lx : lx) * VID_W * scale - offX,
     y: ly * VID_H * scale - offY,
   };
 }
 
-// ─── Color palettes ───────────────────────────────────────────────────────────
-function getSkin(tone?: string) {
-  switch ((tone ?? "medium").toLowerCase()) {
-    case "light":  return { tint: "#F2C890", dark: "#C09060" };
-    case "dark":   return { tint: "#7A4020", dark: "#4A2010" };
-    default:       return { tint: "#C07840", dark: "#905030" };
-  }
-}
-function getEyeHex(c?: string) {
-  switch ((c ?? "brown").toLowerCase()) {
-    case "blue":   return "#1855B8";
-    case "green":  return "#177040";
-    case "gray":   return "#485868";
-    case "cyan":   return "#007888";
-    case "purple": return "#5820A0";
-    default:       return "#5A3818";
-  }
-}
-
-// ─── Draw video frame (mirrored, object-cover) ────────────────────────────────
+// ─── Draw mirrored video frame ────────────────────────────────────────────────
 function drawVideoFrame(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, cW: number, cH: number) {
   const scale = Math.max(cW / VID_W, cH / VID_H);
-  const dW    = VID_W * scale, dH = VID_H * scale;
+  const dW = VID_W * scale, dH = VID_H * scale;
   const cropX = (dW - cW) / 2, cropY = (dH - cH) / 2;
   ctx.save();
   ctx.translate(cW, 0);
   ctx.scale(-1, 1);
-  ctx.drawImage(video, -cropX, -cropY, dW, dH); // -cropX is correct for mirrored
+  ctx.drawImage(video, -cropX, -cropY, dW, dH);
   ctx.restore();
 }
 
-// ─── Sample average brightness of a face region (adaptive blending) ───────────
-function sampleFaceLight(
-  ctx: CanvasRenderingContext2D, lm: LM[], cW: number, cH: number,
-): number {
-  // Sample the forehead center area
-  const c = lmToCanvas(lm[10].x, lm[10].y, cW, cH, true);
-  const r = 8;
-  try {
-    const px = ctx.getImageData(Math.max(0, c.x - r), Math.max(0, c.y - r), r * 2, r * 2).data;
-    let lum = 0;
-    for (let i = 0; i < px.length; i += 4) lum += (px[i] * 0.299 + px[i+1] * 0.587 + px[i+2] * 0.114);
-    return Math.min(1, lum / (px.length / 4) / 200);
-  } catch { return 0.5; }
+// ─── Affine warp: draw one triangle of avatar image onto canvas ───────────────
+function affineWarp(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  src: [[number, number], [number, number], [number, number]],
+  dst: [[number, number], [number, number], [number, number]],
+) {
+  const [s0, s1, s2] = src;
+  const [d0, d1, d2] = dst;
+
+  const dx0 = s1[0] - s0[0], dx1 = s2[0] - s0[0];
+  const dy0 = s1[1] - s0[1], dy1 = s2[1] - s0[1];
+  const det = dx0 * dy1 - dx1 * dy0;
+  if (Math.abs(det) < 0.01) return;
+  const inv = 1 / det;
+
+  const ex0 = d1[0] - d0[0], ex1 = d2[0] - d0[0];
+  const ey0 = d1[1] - d0[1], ey1 = d2[1] - d0[1];
+
+  const a = (ex0 * dy1 - ex1 * dy0) * inv;
+  const b = (ey0 * dy1 - ey1 * dy0) * inv;
+  const c = (ex1 * dx0 - ex0 * dx1) * inv;
+  const d = (ey1 * dx0 - ey0 * dx1) * inv;
+  const e = d0[0] - a * s0[0] - c * s0[1];
+  const f = d0[1] - b * s0[0] - d * s0[1];
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(d0[0], d0[1]);
+  ctx.lineTo(d1[0], d1[1]);
+  ctx.lineTo(d2[0], d2[1]);
+  ctx.closePath();
+  ctx.clip();
+  ctx.setTransform(a, b, c, d, e, f);
+  ctx.drawImage(img, 0, 0, IMG_SZ, IMG_SZ);
+  ctx.restore();
 }
 
-// ─── Main avatar effect pipeline ──────────────────────────────────────────────
-function applyAvatarEffects(
+// ─── Main render: warp avatar + seamless blend ────────────────────────────────
+function renderAvatar(
   ctx: CanvasRenderingContext2D,
-  lm: LM[], cW: number, cH: number,
-  skinTone?: string, _hairCol?: string, eyeCol?: string,
+  video: HTMLVideoElement,
+  lm: LM[],
+  cW: number, cH: number,
+  avatarImg: HTMLImageElement,
+  _skinTone?: string,
+  _hairCol?: string,
+  _eyeCol?: string,
 ) {
-  const pt = (i: number) => lmToCanvas(lm[i].x, lm[i].y, cW, cH, true);
+  // Helper: landmark → canvas pixel (mirrored)
+  const pt  = (i: number): [number, number] => {
+    const p = lmToCanvas(lm[i].x, lm[i].y, cW, cH, true);
+    return [p.x, p.y];
+  };
+  // Helper: canonical avatar pixel
+  const src = (k: number): [number, number] => [
+    CANON_SRC[k][0] * IMG_SZ,
+    CANON_SRC[k][1] * IMG_SZ,
+  ];
 
-  const tracePath = (ids: number[]) => {
+  // ── A. Draw warped avatar triangles (source image → live face)
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  for (const [i0, i1, i2] of TRIANGLES) {
+    affineWarp(
+      ctx,
+      avatarImg,
+      [src(i0), src(i1), src(i2)],
+      [pt(KEY_LM[i0]), pt(KEY_LM[i1]), pt(KEY_LM[i2])],
+    );
+  }
+
+  // ── B. Seamless color blending: overlay real face light on avatar (luminosity blend)
+  // This makes the avatar adapt to the user's room lighting automatically
+  ctx.save();
+  ctx.beginPath();
+  FACE_OVAL.forEach((id, j) => {
+    const [x, y] = pt(id);
+    j === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.closePath();
+  ctx.clip();
+  ctx.globalCompositeOperation = "luminosity";
+  ctx.globalAlpha = 0.30; // 30% real lighting bleeds through → adapts to environment
+  drawVideoFrame(ctx, video, cW, cH);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // ── C. Feathered edge: erase hard polygon boundary with destination-out strokes
+  ctx.save();
+  ctx.beginPath();
+  FACE_OVAL.forEach((id, j) => {
+    const [x, y] = pt(id);
+    j === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.closePath();
+  ctx.clip();
+  for (let i = 1; i <= 8; i++) {
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.lineWidth = i * 2.5;
+    ctx.strokeStyle = `rgba(0,0,0,${0.03 + i * 0.022})`;
     ctx.beginPath();
-    ids.forEach((id, j) => {
-      const p = pt(id);
-      j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+    FACE_OVAL.forEach((id, j) => {
+      const [x, y] = pt(id);
+      j === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     });
     ctx.closePath();
-  };
-
-  const skin   = getSkin(skinTone);
-  const eyeHex = getEyeHex(eyeCol);
-
-  // Face geometry reference
-  const topPt  = pt(10);
-  const chinPt = pt(152);
-  const lJaw   = pt(127);
-  const rJaw   = pt(356);
-  const faceW  = Math.abs(rJaw.x - lJaw.x);
-  const faceH  = Math.abs(chinPt.y - topPt.y);
-  const faceCx = (lJaw.x + rJaw.x) / 2;
-  const faceCy = (topPt.y + chinPt.y) / 2;
-
-  // ── 1. ADAPTIVE SKIN TINT ─────────────────────────────────────────────────
-  // Use gradient fill on the oval path (no hard clip → feathered appearance)
-  const lightFactor = sampleFaceLight(ctx, lm, cW, cH);
-  const skinAlpha   = 0.16 + (1 - lightFactor) * 0.08; // brighter room → less tint needed
-
-  const skinG = ctx.createRadialGradient(
-    faceCx, faceCy - faceH * 0.1, faceW * 0.18,
-    faceCx, faceCy,               faceW * 0.60,
-  );
-  // Parse skin tint to rgb
-  const r = parseInt(skin.tint.slice(1, 3), 16);
-  const g = parseInt(skin.tint.slice(3, 5), 16);
-  const b = parseInt(skin.tint.slice(5, 7), 16);
-  skinG.addColorStop(0,   `rgba(${r},${g},${b},${(skinAlpha * 1.3).toFixed(2)})`);
-  skinG.addColorStop(0.72, `rgba(${r},${g},${b},${skinAlpha.toFixed(2)})`);
-  skinG.addColorStop(1,    `rgba(${r},${g},${b},0)`);
-
-  tracePath(FACE_OVAL);
-  ctx.fillStyle = skinG;
-  ctx.fill();
-
-  // Subtle temple/jaw darkening for face structure (gradient only inside oval)
-  const shadowG = ctx.createLinearGradient(lJaw.x, faceCy, rJaw.x, faceCy);
-  shadowG.addColorStop(0,    "rgba(0,0,0,0.10)");
-  shadowG.addColorStop(0.20, "rgba(0,0,0,0)");
-  shadowG.addColorStop(0.80, "rgba(0,0,0,0)");
-  shadowG.addColorStop(1,    "rgba(0,0,0,0.10)");
-  tracePath(FACE_OVAL);
-  ctx.fillStyle = shadowG;
-  ctx.fill();
-
-  // ── 2. FEATHERED OVAL EDGE — hides the hard polygon boundary ─────────────
-  // Paint thin feather strokes inside the oval to create a soft fade-out
-  ctx.save();
-  tracePath(FACE_OVAL);
-  ctx.clip();
-  for (let i = 1; i <= 6; i++) {
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.lineWidth   = i * 2.2;
-    ctx.strokeStyle = `rgba(0,0,0,${0.04 + i * 0.025})`;
-    tracePath(FACE_OVAL);
     ctx.stroke();
   }
   ctx.globalCompositeOperation = "source-over";
   ctx.restore();
 
-  // ── 3. EYE COLOR OVERLAY ─────────────────────────────────────────────────
-  [LEFT_EYE, RIGHT_EYE].forEach((eyeIds) => {
-    const pts  = eyeIds.map(i => pt(i));
-    const xs   = pts.map(p => p.x), ys = pts.map(p => p.y);
-    const minX = Math.min(...xs), maxX = Math.max(...xs);
-    const minY = Math.min(...ys), maxY = Math.max(...ys);
-    const cx   = (minX + maxX) / 2;
-    const cy   = (minY + maxY) / 2;
-    const ew   = maxX - minX;
-    const eh   = maxY - minY;
-    const irisR = Math.max(ew * 0.25, eh * 0.58, 5);
+  // ── D. Cyber glow outline (avatar identity marker)
+  const topPt  = lmToCanvas(lm[10].x, lm[10].y, cW, cH, true);
+  const chinPt = lmToCanvas(lm[152].x, lm[152].y, cW, cH, true);
+  const lJaw   = lmToCanvas(lm[127].x, lm[127].y, cW, cH, true);
+  const rJaw   = lmToCanvas(lm[356].x, lm[356].y, cW, cH, true);
+  const faceW  = Math.abs(rJaw.x - lJaw.x);
+  const faceH  = Math.abs(chinPt.y - topPt.y);
+  const faceCx = (lJaw.x + rJaw.x) / 2;
 
-    ctx.save();
-    tracePath(eyeIds);
-    ctx.clip();
-
-    // Iris tint — layered for depth
-    const iG = ctx.createRadialGradient(cx, cy, irisR * 0.05, cx, cy, irisR);
-    iG.addColorStop(0,    eyeHex);
-    iG.addColorStop(0.70, eyeHex);
-    iG.addColorStop(1,    "rgba(0,0,0,0)");
-    ctx.globalAlpha = 0.68;
-    ctx.beginPath();
-    ctx.arc(cx, cy, irisR, 0, Math.PI * 2);
-    ctx.fillStyle = iG;
-    ctx.fill();
-
-    // Pupil
-    ctx.globalAlpha = 0.72;
-    ctx.fillStyle   = "#030303";
-    ctx.beginPath();
-    ctx.arc(cx, cy, irisR * 0.36, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Catchlight
-    ctx.globalAlpha = 0.92;
-    ctx.fillStyle   = "#FFFFFF";
-    ctx.beginPath();
-    ctx.arc(cx + irisR * 0.26, cy - irisR * 0.28, irisR * 0.13, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.restore();
-  });
-
-  // ── 4. CYBER GLOW OUTLINE — avatar identity marker ───────────────────────
   ctx.save();
-  tracePath(FACE_OVAL);
-  ctx.strokeStyle = eyeHex;
-  ctx.lineWidth   = 2;
-  ctx.shadowBlur  = 12;
-  ctx.shadowColor = eyeHex;
-  ctx.globalAlpha = 0.65;
-  ctx.stroke();
-  ctx.lineWidth   = 5;
-  ctx.globalAlpha = 0.18;
+  ctx.beginPath();
+  FACE_OVAL.forEach((id, j) => {
+    const p = lmToCanvas(lm[id].x, lm[id].y, cW, cH, true);
+    j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+  });
+  ctx.closePath();
+  ctx.strokeStyle = "#00C8D8";
+  ctx.lineWidth = 1.5;
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = "#00C8D8";
+  ctx.globalAlpha = 0.55;
   ctx.stroke();
   ctx.restore();
 
-  // ── 5. T-ZONE SPECULAR HIGHLIGHT (centre-front lighting) ─────────────────
+  // ── E. T-zone specular highlight
   ctx.save();
-  tracePath(FACE_OVAL);
+  ctx.beginPath();
+  FACE_OVAL.forEach((id, j) => {
+    const p = lmToCanvas(lm[id].x, lm[id].y, cW, cH, true);
+    j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+  });
+  ctx.closePath();
   ctx.clip();
-  const sG = ctx.createRadialGradient(faceCx, topPt.y + faceH * 0.22, 0, faceCx, topPt.y + faceH * 0.22, faceW * 0.20);
-  sG.addColorStop(0, "rgba(255,248,235,0.16)");
+  const sG = ctx.createRadialGradient(
+    faceCx, topPt.y + faceH * 0.20, 0,
+    faceCx, topPt.y + faceH * 0.20, faceW * 0.18,
+  );
+  sG.addColorStop(0, "rgba(255,248,235,0.13)");
   sG.addColorStop(1, "rgba(255,248,235,0)");
   ctx.fillStyle = sG;
   ctx.fillRect(0, 0, cW, cH);
   ctx.restore();
 }
 
-// ─── Draw source landmark dots ────────────────────────────────────────────────
+// ─── Source panel dots ────────────────────────────────────────────────────────
 function drawDots(ctx: CanvasRenderingContext2D, lm: LM[], cW: number, cH: number) {
-  ctx.fillStyle = "rgba(0,255,180,0.80)";
+  ctx.fillStyle = "rgba(0,255,180,0.75)";
   for (const p of lm) {
     const { x, y } = lmToCanvas(p.x, p.y, cW, cH, false);
     ctx.beginPath();
-    ctx.arc(x, y, 1.4, 0, Math.PI * 2);
+    ctx.arc(x, y, 1.3, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -260,25 +315,34 @@ export default function Studio() {
   const [audioLevel,    setAudioLevel]    = useState(0);
   const [videoEl,       setVideoEl]       = useState<HTMLVideoElement | null>(null);
 
-  const streamRef      = useRef<MediaStream | null>(null);
-  const srcCanvasRef   = useRef<HTMLCanvasElement>(null);
-  const outCanvasRef   = useRef<HTMLCanvasElement>(null);
-  const mediapipeRef   = useRef(false);
-  const avatarRef      = useRef(activeAvatar);
-  const prevLmRef      = useRef<LM[]>([]);           // ← EMA previous landmarks
+  const streamRef    = useRef<MediaStream | null>(null);
+  const srcCanvasRef = useRef<HTMLCanvasElement>(null);
+  const outCanvasRef = useRef<HTMLCanvasElement>(null);
+  const mediapipeRef = useRef(false);
+  const avatarRef    = useRef(activeAvatar);
+  const prevLmRef    = useRef<LM[]>([]);
+
+  // Avatar image preloaded once
+  const avatarImgRef = useRef<HTMLImageElement | null>(null);
+  useEffect(() => {
+    const img = new Image();
+    img.src = "/avatars/cyber-nova.png";
+    img.onload = () => { avatarImgRef.current = img; };
+  }, []);
 
   useEffect(() => { avatarRef.current = activeAvatar; }, [activeAvatar]);
 
-  // Canvas pixel sync (CSS pixels, no DPR to avoid coord mismatch)
+  // Canvas pixel sync
   useEffect(() => {
     if (hasPermission !== true) return;
     const sync = (el: HTMLCanvasElement | null) => {
       if (!el) return () => {};
       const ro = new ResizeObserver(() => {
         const r = el.getBoundingClientRect();
-        if (r.width > 0 && (el.width !== Math.round(r.width) || el.height !== Math.round(r.height))) {
-          el.width = Math.round(r.width); el.height = Math.round(r.height);
-          prevLmRef.current = []; // reset EMA on resize to avoid pop
+        const w = Math.round(r.width), h = Math.round(r.height);
+        if (r.width > 0 && (el.width !== w || el.height !== h)) {
+          el.width = w; el.height = h;
+          prevLmRef.current = [];
         }
       });
       ro.observe(el);
@@ -324,17 +388,17 @@ export default function Studio() {
       locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`,
     });
     fm.setOptions({
-      maxNumFaces:           1,
-      refineLandmarks:       false,
+      maxNumFaces: 1,
+      refineLandmarks: false,
       minDetectionConfidence: 0.5,
-      minTrackingConfidence:  0.5,
+      minTrackingConfidence: 0.5,
     });
 
     fm.onResults((res) => {
       const detected = !!(res.multiFaceLandmarks?.length);
       setFaceDetected(detected);
 
-      // ── Source panel: dots on top of dim video
+      // Source panel
       const sc   = srcCanvasRef.current;
       const sCtx = sc?.getContext("2d");
       if (sCtx && sc) {
@@ -342,7 +406,7 @@ export default function Studio() {
         if (detected) drawDots(sCtx, res.multiFaceLandmarks[0] as LM[], sc.width, sc.height);
       }
 
-      // ── Output panel: mirrored video + smoothed avatar effects
+      // Output panel
       const oc   = outCanvasRef.current;
       const oCtx = oc?.getContext("2d");
       if (oCtx && oc) {
@@ -350,15 +414,15 @@ export default function Studio() {
 
         if (video.readyState >= 2) drawVideoFrame(oCtx, video, oc.width, oc.height);
 
-        if (detected) {
-          // ── EMA smoothing — reduce jitter on all 468 landmarks
-          const rawLm   = res.multiFaceLandmarks[0] as LM[];
-          const smoothLm = emaSmooth(rawLm, prevLmRef.current);
+        if (detected && avatarImgRef.current?.complete) {
+          // EMA smoothing (Kalman-like)
+          const raw      = res.multiFaceLandmarks[0] as LM[];
+          const smoothLm = emaSmooth(raw, prevLmRef.current);
           prevLmRef.current = smoothLm;
 
           const av = avatarRef.current;
-          applyAvatarEffects(oCtx, smoothLm, oc.width, oc.height,
-            av?.skinTone, av?.hairColor, av?.eyeColor);
+          renderAvatar(oCtx, video, smoothLm, oc.width, oc.height,
+            avatarImgRef.current, av?.skinTone, av?.hairColor, av?.eyeColor);
         }
       }
     });
@@ -381,14 +445,14 @@ export default function Studio() {
     let iv: ReturnType<typeof setInterval>;
     if (isStreaming) {
       iv = setInterval(() => { setElapsed(e => e + 1); setFps(Math.floor(Math.random() * 4 + 56)); }, 1000);
-    } else { setElapsed(0); setFps(0); }
+    } else setElapsed(0);
     return () => clearInterval(iv);
   }, [isStreaming]);
 
   const fmt = (s: number) =>
     `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
 
-  // ── Permission screens ─────────────────────────────────────────────────────
+  // ── Permission screens ────────────────────────────────────────────────────
   if (hasPermission === false) {
     return (
       <Layout>
@@ -420,7 +484,7 @@ export default function Studio() {
     );
   }
 
-  // ── Main studio ────────────────────────────────────────────────────────────
+  // ── Main studio ───────────────────────────────────────────────────────────
   return (
     <Layout>
       <div className="flex flex-col h-full bg-background p-4 gap-4">
@@ -453,7 +517,7 @@ export default function Studio() {
         {/* Panels */}
         <div className="flex-1 flex gap-4 min-h-0">
 
-          {/* LEFT — source + landmarks */}
+          {/* Source panel */}
           <div className="w-[38%] flex flex-col gap-3 min-h-0">
             <div className="flex-1 relative bg-black rounded-lg overflow-hidden border border-border min-h-0">
               <video
@@ -487,7 +551,7 @@ export default function Studio() {
             </Card>
           </div>
 
-          {/* RIGHT — avatar output */}
+          {/* Output panel */}
           <div className="flex-1 relative rounded-lg overflow-hidden border border-border bg-black min-h-0">
             <canvas ref={outCanvasRef} className="absolute inset-0 w-full h-full" />
 
