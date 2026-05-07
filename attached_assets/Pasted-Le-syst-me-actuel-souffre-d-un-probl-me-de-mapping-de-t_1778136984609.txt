@@ -1,0 +1,15 @@
+Le système actuel souffre d'un problème de mapping de texture et de latence de suivi. Pour corriger cela, l'outil doit impérativement intégrer les trois fonctionnalités suivantes :
+• Le Verrouillage Dynamique (Warping) : Au lieu de simplement superposer une image sur des coordonnées X et Y, le masque doit être déformé en temps réel pour épouser les 468 points de repère faciaux (Face Mesh). Si le visage pivote ou s'incline, le masque doit suivre cette perspective mathématiquement pour rester 'collé' à la peau.
+• La Fusion de Couleurs (Seamless Blending) : Pour éviter l'effet 'autocollant' ou le carré noir/gris visible sur les bords, le logiciel doit utiliser un algorithme de clonage fluide. Cela permet d'ajuster automatiquement la luminosité et le teint du masque pour qu'ils correspondent exactement à la lumière de la pièce où se trouve l'utilisateur.
+• Lissage des Mouvements (Kalman Filtering) : Pour éviter que le masque ne tremble ou ne se décale brusquement sur le côté (comme on le voit sur les captures), un filtre de stabilisation doit être appliqué sur les coordonnées pour adoucir le suivi."
+2. Texte pour améliorer la qualité du masque (Instructions pour l'image source)
+"Pour que le masque soit indétectable et s'adapte parfaitement, l'image source ('Cyber Nova') doit respecter ces critères stricts :
+• Format et Fond : L'image doit être au format carré (ex: 1024x1024) avec un fond noir absolu. Le noir total permet au logiciel d'isoler uniquement les traits du visage sans créer d'ombres grises parasites autour de la tête.
+• Position Neutre : Le visage doit être parfaitement de face, les yeux alignés sur une ligne horizontale stricte. Il ne doit y avoir aucune inclinaison de la tête sur la photo source.
+• Équilibrage de la Lumière : La source de lumière sur le masque doit être frontale et diffuse. Si le masque a des ombres marquées d'un seul côté, cela brisera l'illusion lors du chat vidéo si la lumière réelle de l'utilisateur vient de l'autre côté.
+• Suppression des Artefacts : Éliminer tous les halos, lueurs externes ou contours flous. Les bords du visage doivent être nets pour que la fusion avec la vraie peau soit propre au niveau du front et de la mâchoire."
+3. Conseils pour une utilisation "Invisible" en vidéo
+Pour que l'interlocuteur ne se doute de rien, voici les réglages de ton environnement :
+1.	L'éclairage réel : Place une source de lumière douce directement devant toi. Évite les fenêtres derrière toi (contre-jour), car cela crée du 'bruit' numérique que l'IA déteste, ce qui provoque les décalages du masque.
+2.	La Caméra Virtuelle : Utilise toujours une résolution de sortie standard (ex: 720p). Une résolution trop haute sur Replit créera du lag, tandis qu'une résolution trop basse rendra le masque flou.
+3.	Le Cadrage : Garde ta tête au centre de l'écran. Les algorithmes de suivi perdent souvent en précision lorsqu'on s'approche trop des bords du cadre vidéo.
